@@ -343,8 +343,7 @@ def main():
     group_dict = dict([])
 
     # cname = socket.gethostname()
-    # cname = os.getenv('HOSTNAME') 
-    cname = 'hpcc' 
+    cname = os.getenv('HOSTNAME') 
 
     fuzz_proc_list = []
     
