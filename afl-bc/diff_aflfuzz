@@ -1,0 +1,1970 @@
+45a46
+> #include <dlfcn.h>
+47d47
+< #include <sys/fcntl.h>
+58,59d57
+< #include <sys/socket.h>
+< 
+68,80d65
+< static char* stat_vector[20];
+< 
+< #define FUZ_SRC 0
+< #define S2E_SRC 1
+< #define TRA_SRC 2
+< 
+< int imported_paths[3] = {0, 0, 0};
+< int checked_paths[3] = {0, 0, 0};
+< 
+< int sync_times = 0;
+< int sync_count = 0;
+< 
+< 
+84,85d68
+<           // *local_out_dir,
+<           *remote_out_dir,
+94d76
+< 
+99a82,83
+> static int turn_strace_on = 0;
+> 
+122,127c106,109
+<            dev_urandom_fd,            /* Persistent fd for /dev/urandom   */
+<            dev_null_fd;               /* Persistent fd for /dev/null      */
+< 
+< static s32 qemu_log_fd;                    /*Persistent fd for /tmp/afl_log*/
+< 
+< static s32 fsrv_ctl_fd,               /* Fork server control pipe (write) */
+---
+>            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
+>            dev_null_fd = -1,          /* Persistent fd for /dev/null      */
+>            dev_strace_fd = -1,
+>            fsrv_ctl_fd,               /* Fork server control pipe (write) */
+130d111
+< 
+132,134c113,114
+<            child_pid = -1;            /* PID of the fuzzed program        */
+< 
+< static int is_qemu_log = 0;
+---
+>            child_pid = -1,            /* PID of the fuzzed program        */
+>            out_dir_fd = -1;           /* FD of the lock file              */
+171,172c151
+<            first_crash_time = 0,      /* Time for first crash (ms)                    */
+<            last_crash_time = 0,       /* Time for most recent crash (ms)  */
+---
+>            last_crash_time,           /* Time for most recent crash (ms)  */
+201c180
+< static u32 rand_cnt = RESEED_RNG;     /* Random number counter            */
+---
+> static u32 rand_cnt;                  /* Random number counter            */
+220c199
+<       //was_fuzzed,                     /* Had any fuzzing done yet?        */
+---
+>       was_fuzzed,                     /* Had any fuzzing done yet?        */
+224d202
+<       //was_screened,                   /* Passed the screening phase       */
+229d206
+<       fuzz_level,                     /* Number of fuzzing iterations     */
+239,240c216,217
+<   struct queue_entry *next;             /* Next element, if any             */
+<                    // *next_100         /* 100 elements ahead               */
+---
+>   struct queue_entry *next,           /* Next element, if any             */
+>                      *next_100;       /* 100 elements ahead               */
+246,247c223,224
+<                           *queue_top;//, /* Top of the list                  */
+<                           //*q_prev100; /* Previous 100 marker              */
+---
+>                           *queue_top, /* Top of the list                  */
+>                           *q_prev100; /* Previous 100 marker              */
+251d227
+< // static struct queue_entry** top_rated;
+264a241,242
+> static u8* (*post_handler)(u8* buf, u32* len);
+> 
+312,387d289
+<   #include "khash.h"
+<   KHASH_MAP_INIT_INT(32,u32)
+<   khash_t(32) *cksum2paths;
+<   
+<   static u32 getPaths(u32 key_cksum){
+<     khiter_t k = kh_get(32, cksum2paths, key_cksum);
+<     if (k != kh_end(cksum2paths)){
+<       return kh_value(cksum2paths, k);
+<     } else {
+<       return 0;
+<     }
+<   }
+<   
+<   static void chooseNext_queue_cur() {
+<     if (!queue_cur) return;
+<     struct queue_entry *prev_queue_cur = queue_cur;
+<     queue_cur = queue_cur->next;
+<     if (!queue_cur) return;
+<        
+<  
+<     struct queue_entry *queue_it = queue_cur;
+<     struct queue_entry *bestEntry_prev = NULL;
+<     struct queue_entry *bestEntry = queue_cur;
+<     u32 bestEntry_level = queue_cur->fuzz_level;
+<     u32 bestEntry_paths = getPaths(queue_cur->exec_cksum);
+<     u32 queued_paths_now = 0;
+<     queue_it = queue;
+<     while (queue_it) {
+<       queued_paths_now ++;
+<       queue_it = queue_it->next;
+<     }
+<     if ( queued_paths_now != queued_paths) {
+<       queued_paths = queued_paths_now;
+<     }
+<     queue_it=queue_cur;
+< 
+<     while (queue_it->next) {
+<       if (queue_it->next->fuzz_level < bestEntry_level 
+<          || (queue_it->next->fuzz_level == bestEntry_level 
+<             && getPaths(queue_it->next->exec_cksum) < bestEntry_paths)) {
+<         bestEntry_prev = queue_it;
+<         bestEntry = queue_it->next;
+<         bestEntry_paths = getPaths(bestEntry->exec_cksum);
+<         bestEntry_level = bestEntry->fuzz_level;
+<       }    
+<       queue_it = queue_it->next;
+<     }
+< 
+<     //Make maxEntry new head
+<     if (bestEntry->exec_cksum != queue_cur->exec_cksum){
+<       //remove maxEntry and make head
+<       if (bestEntry->next) bestEntry_prev->next = bestEntry->next;
+<       else if (bestEntry != queue_top) PFATAL("BEST_ENTRY without next != QUEUE_TOP"); 
+<       //repair queue_top
+<       else {
+<         queue_top = bestEntry_prev;
+<         bestEntry_prev->next = NULL;
+<       }
+<       bestEntry->next = queue_cur;
+<       queue_cur = bestEntry;
+<       //link new head up with previous
+<       prev_queue_cur->next = queue_cur;
+<       
+<     }
+<    
+<     queued_paths_now = 0; 
+<     queue_it = queue;
+<     while (queue_it) {
+<       queued_paths_now ++;
+<       queue_it = queue_it->next;
+<     }
+<     if ( queued_paths_now != queued_paths) {
+<       queued_paths = queued_paths_now;
+<     }
+<     return;
+<   }
+389d290
+<  
+676,702c577,603
+< //static void mark_as_redundant(struct queue_entry* q, u8 state) {
+< //
+< //  u8* fn;
+< //  s32 fd;
+< //
+< //  if (state == q->fs_redundant) return;
+< //
+< //  q->fs_redundant = state;
+< //
+< //  fn = strrchr(q->fname, '/');
+< //  fn = alloc_printf("%s/queue/.state/redundant_edges/%s", out_dir, fn + 1);
+< //
+< //  if (state) {
+< //
+< //    fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+< //    if (fd < 0) PFATAL("Unable to create '%s'", fn);
+< //    close(fd);
+< //
+< //  } else {
+< //
+< //    if (unlink(fn)) PFATAL("Unable to remove '%s'", fn);
+< //
+< //  }
+< //
+< //  ck_free(fn);
+< //
+< //}
+---
+> static void mark_as_redundant(struct queue_entry* q, u8 state) {
+> 
+>   u8* fn;
+>   s32 fd;
+> 
+>   if (state == q->fs_redundant) return;
+> 
+>   q->fs_redundant = state;
+> 
+>   fn = strrchr(q->fname, '/');
+>   fn = alloc_printf("%s/queue/.state/redundant_edges/%s", out_dir, fn + 1);
+> 
+>   if (state) {
+> 
+>     fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+>     if (fd < 0) PFATAL("Unable to create '%s'", fn);
+>     close(fd);
+> 
+>   } else {
+> 
+>     if (unlink(fn)) PFATAL("Unable to remove '%s'", fn);
+> 
+>   }
+> 
+>   ck_free(fn);
+> 
+> }
+722,723c623,624
+<   } else //q_prev100 = 
+<       queue = queue_top = q;
+---
+> 
+>   } else q_prev100 = queue = queue_top = q;
+728,733c629,634
+< //  if (!(queued_paths % 100)) {
+< //
+< //    q_prev100->next_100 = q;
+< //    q_prev100 = q;
+< //
+< //  }
+---
+>   if (!(queued_paths % 100)) {
+> 
+>     q_prev100->next_100 = q;
+>     q_prev100 = q;
+> 
+>   }
+772d672
+<   // fname = alloc_printf("%s/fuzz_bitmap", local_out_dir);
+777a678
+> 
+892a794
+> 
+979a882
+> 
+1147d1049
+< 
+1176a1079
+> 
+1178,1179d1080
+<   u32 fuzz_level = q->fuzz_level;
+<   u32 paths = getPaths(q->exec_cksum);
+1181c1082,1085
+<   
+---
+> 
+>   /* For every byte set in trace_bits[], see if there is a previous winner,
+>      and how it compares to us. */
+> 
+1187,1199c1091,1095
+<          u32 top_rated_fuzz_level = top_rated[i]->fuzz_level;
+<          u32 top_rated_paths = getPaths(top_rated[i]->exec_cksum);
+<          u64 top_rated_fav_factor = top_rated[i]->exec_us * top_rated[i]->len;
+<          
+<          if (fuzz_level > top_rated_fuzz_level) continue;
+<          else if (fuzz_level == top_rated_fuzz_level) {
+<            if (paths > top_rated_paths) continue;
+<            else if ( paths == top_rated_paths) {
+<              if (fav_factor > top_rated_fav_factor) continue;
+<            }
+<          }
+<          //if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len ) continue;
+<          
+---
+> 
+>          /* Faster-executing or smaller test cases are favored. */
+> 
+>          if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
+> 
+1250d1145
+< 
+1273,1274c1168,1169
+<       //if (!top_rated[i]->was_fuzzed) pending_favored++;
+<       if (!top_rated[i]->fuzz_level == 0) pending_favored++;
+---
+>       if (!top_rated[i]->was_fuzzed) pending_favored++;
+> 
+1277,1282c1172,1177
+<   //q = queue;
+<   //
+<   //while (q) {
+<   //  mark_as_redundant(q, !q->favored);
+<   //  q = q->next;
+<   //}
+---
+>   q = queue;
+> 
+>   while (q) {
+>     mark_as_redundant(q, !q->favored);
+>     q = q->next;
+>   }
+1320,1332c1215,1241
+<     ACTF("shm_id: %i", (int)shm_id);
+< #ifdef __x86_64__
+<     ACTF("trace_bits@ 0x%016lx", (unsigned long)trace_bits);
+<     ACTF("virgin_bits@ 0x%016lx", (unsigned long)virgin_bits);
+<     ACTF("virgin_hang@ 0x%016lx", (unsigned long)virgin_hang);
+<     ACTF("virgin_crash@ 0x%016lx", (unsigned long)virgin_crash);
+< #else
+<     ACTF("trace_bits@ 0x%08x", (unsigned int)trace_bits);
+<     ACTF("virgin_bits@ 0x%08x", (unsigned int)virgin_bits);
+<     ACTF("virgin_hang@ 0x%08x", (unsigned int)virgin_hang);
+<     ACTF("virgin_crash@ 0x%08x", (unsigned int)virgin_crash);
+< #endif /* ^__x86_64__ */
+<   
+---
+> }
+> 
+> 
+> /* Load postprocessor, if available. */
+> 
+> static void setup_post(void) {
+> 
+>   void* dh;
+>   u8* fn = getenv("AFL_POST_LIBRARY");
+>   u32 tlen = 6;
+> 
+>   if (!fn) return;
+> 
+>   ACTF("Loading postprocessor from '%s'...", fn);
+> 
+>   dh = dlopen(fn, RTLD_NOW);
+>   if (!dh) FATAL("%s", dlerror());
+> 
+>   post_handler = dlsym(dh, "afl_postprocess");
+>   if (!post_handler) FATAL("Symbol 'afl_postprocess' not found.");
+> 
+>   /* Do a quick test. It's better to segfault now than later =) */
+> 
+>   post_handler("hello", &tlen);
+> 
+>   OKF("Postprocessor installed successfully.");
+> 
+1449a1359,1495
+> /* Read extras from a file, sort by size. */
+> 
+> static void load_extras_file(u8* fname, u32* min_len, u32* max_len,
+>                              u32 dict_level) {
+> 
+>   FILE* f;
+>   u8  buf[MAX_LINE];
+>   u8  *lptr;
+>   u32 cur_line = 0;
+> 
+>   f = fopen(fname, "r");
+> 
+>   if (!f) PFATAL("Unable to open '%s'", fname);
+> 
+>   while ((lptr = fgets(buf, MAX_LINE, f))) {
+> 
+>     u8 *rptr, *wptr;
+>     u32 klen = 0;
+> 
+>     cur_line++;
+> 
+>     /* Trim on left and right. */
+> 
+>     while (isspace(*lptr)) lptr++;
+> 
+>     rptr = lptr + strlen(lptr) - 1;
+>     while (rptr >= lptr && isspace(*rptr)) rptr--;
+>     rptr++;
+>     *rptr = 0;
+> 
+>     /* Skip empty lines and comments. */
+> 
+>     if (!*lptr || *lptr == '#') continue;
+> 
+>     /* All other lines must end with '"', which we can consume. */
+> 
+>     rptr--;
+> 
+>     if (rptr < lptr || *rptr != '"')
+>       FATAL("Malformed name=\"value\" pair in line %u.", cur_line);
+> 
+>     *rptr = 0;
+> 
+>     /* Skip alphanumerics and dashes (label). */
+> 
+>     while (isalnum(*lptr) || *lptr == '_') lptr++;
+> 
+>     /* If @number follows, parse that. */
+> 
+>     if (*lptr == '@') {
+> 
+>       lptr++;
+>       if (atoi(lptr) > dict_level) continue;
+>       while (isdigit(*lptr)) lptr++;
+> 
+>     }
+> 
+>     /* Skip whitespace and = signs. */
+> 
+>     while (isspace(*lptr) || *lptr == '=') lptr++;
+> 
+>     /* Consume opening '"'. */
+> 
+>     if (*lptr != '"')
+>       FATAL("Malformed name=\"keyword\" pair in line %u.", cur_line);
+> 
+>     lptr++;
+> 
+>     if (!*lptr) FATAL("Empty keyword in line %u.", cur_line);
+> 
+>     /* Okay, let's allocate memory and copy data between "...", handling
+>        \xNN escaping, \\, and \". */
+> 
+>     extras = ck_realloc_block(extras, (extras_cnt + 1) *
+>                sizeof(struct extra_data));
+> 
+>     wptr = extras[extras_cnt].data = ck_alloc(rptr - lptr);
+> 
+>     while (*lptr) {
+> 
+>       char* hexdigits = "0123456789abcdef";
+> 
+>       switch (*lptr) {
+> 
+>         case 1 ... 31:
+>         case 128 ... 255:
+>           FATAL("Non-printable characters in line %u.", cur_line);
+> 
+>         case '\\':
+> 
+>           lptr++;
+> 
+>           if (*lptr == '\\' || *lptr == '"') {
+>             *(wptr++) = *(lptr++);
+>             klen++;
+>             break;
+>           }
+> 
+>           if (*lptr != 'x' || !isxdigit(lptr[1]) || !isxdigit(lptr[2]))
+>             FATAL("Invalid escaping (not \\xNN) in line %u.", cur_line);
+> 
+>           *(wptr++) =
+>             ((strchr(hexdigits, tolower(lptr[1])) - hexdigits) << 4) |
+>             (strchr(hexdigits, tolower(lptr[2])) - hexdigits);
+> 
+>           lptr += 3;
+>           klen++;
+> 
+>           break;
+> 
+>         default:
+> 
+>           *(wptr++) = *(lptr++);
+>           klen++;
+> 
+>       }
+> 
+>     }
+> 
+>     extras[extras_cnt].len = klen;
+> 
+>     if (extras[extras_cnt].len > MAX_DICT_FILE)
+>       FATAL("Keyword too big in line %u (%s, limit is %s)", cur_line,
+>             DMS(klen), DMS(MAX_DICT_FILE));
+> 
+>     if (*min_len > klen) *min_len = klen;
+>     if (*max_len < klen) *max_len = klen;
+> 
+>     extras_cnt++;
+> 
+>   }
+> 
+>   fclose(f);
+> 
+> }
+> 
+> 
+1456c1502,1510
+<   u32 min_len = MAX_DICT_FILE, max_len = 0;
+---
+>   u32 min_len = MAX_DICT_FILE, max_len = 0, dict_level = 0;
+>   u8* x;
+> 
+>   /* If the name ends with @, extract level and continue. */
+> 
+>   if ((x = strchr(dir, '@'))) {
+> 
+>     *x = 0;
+>     dict_level = atoi(x + 1);
+1458c1512,1514
+<   ACTF("Loading extra dictionary from '%s'...", dir);
+---
+>   }
+> 
+>   ACTF("Loading extra dictionary from '%s' (level %u)...", dir, dict_level);
+1462c1518,1529
+<   if (!d) PFATAL("Unable to open '%s'", dir);
+---
+>   if (!d) {
+> 
+>     if (errno == ENOTDIR) {
+>       load_extras_file(dir, &min_len, &max_len, dict_level);
+>       goto check_and_sort;
+>     }
+> 
+>     PFATAL("Unable to open '%s'", dir);
+> 
+>   }
+> 
+>   if (x) FATAL("Dictinary levels not supported for directories.");
+1507a1575,1577
+> 
+> check_and_sort:
+> 
+1525a1596,1597
+> 
+> 
+1653c1725
+<     u8* fn = alloc_printf("%s/queue/.state/auto_extras/auto_%08u", out_dir, i);
+---
+>     u8* fn = alloc_printf("%s/queue/.state/auto_extras/auto_%06u", out_dir, i);
+1679c1751
+<     u8* fn = alloc_printf("%s/.state/auto_extras/auto_%08u", in_dir, i);
+---
+>     u8* fn = alloc_printf("%s/.state/auto_extras/auto_%06u", in_dir, i);
+1730a1803
+> 
+1746c1819
+<   ACTF("Spinning up the fork server ");
+---
+>   ACTF("Spinning up the fork server...");
+1759c1832
+<       soft 128. Let's try to fix that... */
+---
+>        soft 128. Let's try to fix that... */
+1802,1803c1875
+<     
+<     if(!is_qemu_log)
+---
+>     if(turn_strace_on == 0)
+1806c1878
+<       dup2(qemu_log_fd, 2);
+---
+>       dup2(dev_strace_fd, 2);
+1821c1893
+<     if (dup2(ctl_pipe[0], FORKSRV_FD ) < 0) PFATAL("dup2() failed");
+---
+>     if (dup2(ctl_pipe[0], FORKSRV_FD) < 0) PFATAL("dup2() failed");
+1828a1901
+>     close(out_dir_fd);
+1831a1905
+> 
+1835c1909
+<     setenv("LD_BIND_NOW", "1", 0);
+---
+>     if (!getenv("LD_BIND_LAZY")) setenv("LD_BIND_NOW", "1", 0);
+1865,1878c1939
+<   fsrv_st_fd = st_pipe[0];
+< 
+< 
+<   // if(write(fsrv_ctl_fd[i], &i, 4) != 4)
+<   // {
+<   //   if (stop_soon) return ;
+<   //   FATAL("Unable to send cb_id to the new fork server of CB %02i (OOM?)", i);
+<   // }
+< 
+<   // if(write(fsrv_ctl_fd[i], shm_id + i, 4) != 4)
+<   // {
+<   //   if (stop_soon) return ;
+<   //   FATAL("Unable to send shm_id to the new fork server of CB %02i (OOM?)", i);
+<   // }
+---
+>   fsrv_st_fd  = st_pipe[0];
+1900d1960
+<     // continue;
+1906c1966
+<   if (waitpid(forksrv_pid, &status, WUNTRACED) <= 0)
+---
+>   if (waitpid(forksrv_pid, &status, 0) <= 0)
+1951c2011
+<           "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+---
+>            "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+1953c2013
+<           "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+---
+>            "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+1956c2016
+<            "      Tip: you can use ppvm (http://jwilk.net/software/ppvm) to quickly\n"
+---
+>            "      Tip: you can use http://jwilk.net/software/recidivm to quickly\n"
+2002c2062
+<          "    handshake with the injected code. There are two probable explanations:\n\n"
+---
+>          "    handshake with the injected code. There are %s probable explanations:\n\n"
+2003a2064
+>          "%s"
+2009c2070
+<         "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+---
+>          "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+2011c2072
+<         "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+---
+>          "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+2014,2015c2075,2076
+<         "      Tip: you can use ppvm (http://jwilk.net/software/ppvm) to quickly\n"
+<         "      estimate the required amount of virtual memory for the binary.\n\n"
+---
+>          "      Tip: you can use http://jwilk.net/software/recidivm to quickly\n"
+>          "      estimate the required amount of virtual memory for the binary.\n\n"
+2017,2019c2078,2084
+<         "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
+<         "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
+<         DMS(mem_limit << 20), mem_limit - 1);
+---
+>          "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
+>          "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
+>          getenv("AFL_DEFER_FORKSRV") ? "three" : "two",
+>          getenv("AFL_DEFER_FORKSRV") ?
+>          "    - You are using AFL_DEFER_FORKSRV, but __afl_manual_init() is never\n"
+>          "      reached before the program terminates.\n\n" : "",
+>          DMS(mem_limit << 20), mem_limit - 1);
+2033a2099,2100
+>   static u32 prev_timed_out = 0;
+> 
+2037d2103
+<   
+2054c2120
+<     child_pid= fork();
+---
+>     child_pid = fork();
+2088c2154,2157
+<       dup2(dev_null_fd, 2);
+---
+>       if(turn_strace_on == 0)
+>         dup2(dev_null_fd, 2);
+>       else
+>         dup2(dev_strace_fd, 2);
+2100a2170,2171
+>       /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
+> 
+2101a2173,2175
+>       close(out_dir_fd);
+>       close(dev_urandom_fd);
+>       close(fileno(plot_file));
+2129c2203
+<     if ((res = write(fsrv_ctl_fd, &status, 4)) != 4) {
+---
+>     if ((res = write(fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {
+2146d2219
+<   
+2159c2232
+<     if (waitpid(child_pid, &status, WUNTRACED) <= 0) PFATAL("waitpid() failed");
+---
+>     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
+2173c2246
+<  
+---
+> 
+2181d2253
+<   
+2183,2185c2255,2257
+<     /* Any subsequent operations on trace_bits must not be moved by the
+<        compiler above this point. Past this location, trace_bits[] behave
+<        very normally and do not have to be treated as volatile. */
+---
+>   /* Any subsequent operations on trace_bits must not be moved by the
+>      compiler below this point. Past this location, trace_bits[] behave
+>      very normally and do not have to be treated as volatile. */
+2196c2268,2270
+<   
+---
+> 
+>   prev_timed_out = child_timed_out;
+> 
+2206,2207c2280,2281
+< /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
+<    must use a special exit code. */
+---
+>   /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
+>      must use a special exit code. */
+2314c2388
+<   if (!dumb_mode && !no_forkserver && !forksrv_pid)
+---
+>   if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
+2316c2390
+<   // while(1);
+---
+> 
+2326c2400
+<     // ACTF("run_target() 1 at staget_cur: %d", stage_cur);
+---
+> 
+2328c2402
+<     
+---
+> 
+2340c2414
+<     // ACTF("cksum: %u @%d", cksum, stage_cur);
+---
+> 
+2356c2430
+<   
+---
+> 
+2371a2446
+> 
+2377c2452
+<   
+---
+> 
+2397a2473
+> 
+2414d2489
+<   {
+2416d2490
+<   }
+2479c2553
+<           if (timeout_given == 2) {
+---
+>           if (timeout_given > 1) {
+2535c2609
+<                "      Tip: you can use ppvm (http://jwilk.net/software/ppvm) to quickly\n"
+---
+>                "      Tip: you can use http://jwilk.net/software/recidivm to quickly\n"
+2606d2679
+<       // WARNF("All test cases timeout!");
+2681c2754
+<         sscanf(rsl + 3, "%08u", &orig_id) == 1 && orig_id == id) {
+---
+>         sscanf(rsl + 3, "%06u", &orig_id) == 1 && orig_id == id) {
+2694c2767
+<       if (src_str && sscanf(src_str + 1, "%08u", &src_id) == 1) {
+---
+>       if (src_str && sscanf(src_str + 1, "%06u", &src_id) == 1) {
+2714c2787
+<       nfn = alloc_printf("%s/queue/id:%08u,orig:%s", out_dir, id, use_name);
+---
+>       nfn = alloc_printf("%s/queue/id:%06u,orig:%s", out_dir, id, use_name);
+2718c2791
+<       nfn = alloc_printf("%s/queue/id_%08u", out_dir, id);
+---
+>       nfn = alloc_printf("%s/queue/id_%06u", out_dir, id);
+2755c2828
+<     sprintf(ret, "sync:%s,src:%08u", syncing_party, syncing_case);
+---
+>     sprintf(ret, "sync:%s,src:%06u", syncing_party, syncing_case);
+2759c2832
+<     sprintf(ret, "src:%08u", current_entry);
+---
+>     sprintf(ret, "src:%06u", current_entry);
+2762c2835
+<       sprintf(ret + strlen(ret), "+%08u", splicing_with);
+---
+>       sprintf(ret + strlen(ret), "+%06u", splicing_with);
+2846,2854d2918
+<   
+<   //Update path freq. No change to semantics
+<   khiter_t k;
+<   u32 key_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+<   k = kh_get(32, cksum2paths, key_cksum);
+<   if (k != kh_end(cksum2paths)){
+<     ++kh_value(cksum2paths, k);
+<   }
+< 
+2855a2920
+> 
+2858,2862c2923,2928
+<     
+<       if (!(hnb = has_new_bits(virgin_bits))) {
+<         if (crash_mode) total_crashes++;
+<         return 0;
+<       }    
+---
+> 
+>     if (!(hnb = has_new_bits(virgin_bits))) {
+>       if (crash_mode) total_crashes++;
+>       return 0;
+>     }    
+> 
+2865c2931
+<     fn = alloc_printf("%s/queue/id:%08u,%s", out_dir, queued_paths,
+---
+>     fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
+2870c2936
+<     fn = alloc_printf("%s/queue/id_%08u", out_dir, queued_paths);
+---
+>     fn = alloc_printf("%s/queue/id_%06u", out_dir, queued_paths);
+2881,2887c2947
+<     queue_top->exec_cksum = key_cksum; //hash32(trace_bits, MAP_SIZE, HASH_CONST);
+<     int ret;
+<     if (k == kh_end(cksum2paths)){
+<       k = kh_put(32, cksum2paths, key_cksum, &ret);
+<       kh_value(cksum2paths, k) = 1;
+<     } 
+<  
+---
+>     queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+2933c2993
+<       fn = alloc_printf("%s/hangs/id:%08llu,%s", out_dir,
+---
+>       fn = alloc_printf("%s/hangs/id:%06llu,%s", out_dir,
+2938c2998
+<       fn = alloc_printf("%s/hangs/id_%08llu", out_dir,
+---
+>       fn = alloc_printf("%s/hangs/id_%06llu", out_dir,
+2974c3034
+<       fn = alloc_printf("%s/crashes/id:%08llu,sig:%02u,%s", out_dir,
+---
+>       fn = alloc_printf("%s/crashes/id:%06llu,sig:%02u,%s", out_dir,
+2979c3039
+<       fn = alloc_printf("%s/crashes/id_%08llu_%02u", out_dir, unique_crashes,
+---
+>       fn = alloc_printf("%s/crashes/id_%06llu_%02u", out_dir, unique_crashes,
+2984,2988d3043
+<       if(unique_crashes == 0)
+<       {
+<         first_crash_time = get_cur_time();
+<       }
+< 
+3027,3030d3081
+<   // char cmd[128];
+<   // sprintf(cmd, "ln -sf %s/fuzzer_stats /home/vagrant/fuzzer_stats", out_dir);
+<   // system(cmd);
+< 
+3033,3035c3084,3085
+<   // if (in_place_resume) fn = alloc_printf("%s/fuzzer_stats", out_dir);
+<   // else fn = alloc_printf("%s/../fuzzer_stats", in_dir);
+<   fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+---
+>   if (in_place_resume) fn = alloc_printf("%s/fuzzer_stats", out_dir);
+>   else fn = alloc_printf("%s/../fuzzer_stats", in_dir);
+3054a3105,3141
+> /* The same, but for timeouts. The idea is that when resuming sessions without
+>    -t given, we don't want to keep auto-scaling the timeout over and over
+>    again to prevent it from growing due to random flukes. */
+> 
+> static void find_timeout(void) {
+> 
+>   static u8 tmp[4096]; /* Ought to be enough for anybody. */
+> 
+>   u8  *fn, *off;
+>   s32 fd, i;
+>   u32 ret;
+> 
+>   if (!resuming_fuzz) return;
+> 
+>   if (in_place_resume) fn = alloc_printf("%s/fuzzer_stats", out_dir);
+>   else fn = alloc_printf("%s/../fuzzer_stats", in_dir);
+> 
+>   fd = open(fn, O_RDONLY);
+>   ck_free(fn);
+> 
+>   if (fd < 0) return;
+> 
+>   i = read(fd, tmp, sizeof(tmp) - 1); (void)i; /* Ignore errors */
+>   close(fd);
+> 
+>   off = strstr(tmp, "exec_timeout   : ");
+>   if (!off) return;
+> 
+>   ret = atoi(off + 17);
+>   if (ret <= 4) return;
+> 
+>   exec_tmout = ret;
+>   timeout_given = 3;
+> 
+> }
+> 
+> 
+3061,3062c3148
+<   // u8* fn = alloc_printf("%s/fuzzer_stats", out_dir);
+<   u8* fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+---
+>   u8* fn = alloc_printf("%s/fuzzer_stats", out_dir);
+3087,3117c3173,3197
+<   fprintf(f, "start_time                  : %llu\n"
+<              "last_update                 : %llu\n"
+<              "fuzzer_pid                  : %u\n"
+<              "first_crash_time            : %llu\n"
+<              "last_crash_time             : %llu\n"
+<              "cycles_done                 : %llu\n"
+<              "execs_done                  : %llu\n"
+<              "execs_per_sec               : %0.02f\n"
+<              "paths_total                 : %u\n"
+<              "paths_found                 : %u\n"
+<              "paths_imported              : %u\n"
+<              "max_depth                   : %u\n"
+<              "cur_path                    : %u\n"
+<              "pending_favs                : %u\n"
+<              "pending_total               : %u\n"
+<              "variable_paths              : %u\n"
+<              "bitmap_cvg                  : %0.02f%%\n"
+<              "unique_crashes              : %llu\n"
+<              "unique_hangs                : %llu\n"
+<              "imported_paths              : %u\n"
+<              "checked_paths               : %i\n"
+<              "imported_paths_fuz          : %i\n"
+<              "checked_paths_fuz           : %i\n"
+<              "imported_paths_s2e          : %i\n"
+<              "checked_paths_s2e           : %i\n"
+<              "imported_paths_traffic      : %i\n"
+<              "checked_paths_traffic       : %i\n" 
+<              "sync_times                  : %i\n"
+<              "afl_banner                  : %s\n"
+<              "afl_version                 : " VERSION "\n"
+<              "command_line                : %s\n",
+---
+>   fprintf(f, "start_time     : %llu\n"
+>              "last_update    : %llu\n"
+>              "fuzzer_pid     : %u\n"
+>              "cycles_done    : %llu\n"
+>              "execs_done     : %llu\n"
+>              "execs_per_sec  : %0.02f\n"
+>              "paths_total    : %u\n"
+>              "paths_favored  : %u\n"
+>              "paths_found    : %u\n"
+>              "paths_imported : %u\n"
+>              "max_depth      : %u\n"
+>              "cur_path       : %u\n"
+>              "pending_favs   : %u\n"
+>              "pending_total  : %u\n"
+>              "variable_paths : %u\n"
+>              "bitmap_cvg     : %0.02f%%\n"
+>              "unique_crashes : %llu\n"
+>              "unique_hangs   : %llu\n"
+>              "last_path      : %llu\n"
+>              "last_crash     : %llu\n"
+>              "last_hang      : %llu\n"
+>              "exec_timeout   : %u\n"
+>              "afl_banner     : %s\n"
+>              "afl_version    : " VERSION "\n"
+>              "command_line   : %s\n",
+3119d3198
+<              first_crash_time / 1000, last_crash_time /1000,
+3121,3122c3200,3201
+<              queued_paths, queued_discovered, queued_imported, max_depth,
+<              current_entry, pending_favored, pending_not_fuzzed,
+---
+>              queued_paths, queued_favored, queued_discovered, queued_imported,
+>              max_depth, current_entry, pending_favored, pending_not_fuzzed,
+3124,3129c3203,3205
+<              queued_imported, sync_count, 
+<              imported_paths[FUZ_SRC], checked_paths[FUZ_SRC],
+<              imported_paths[S2E_SRC], checked_paths[S2E_SRC],
+<              imported_paths[TRA_SRC], checked_paths[TRA_SRC],
+<              sync_times,
+<              use_banner, orig_cmdline); /* ignore errors */
+---
+>              last_path_time / 1000, last_crash_time / 1000,
+>              last_hang_time / 1000, exec_tmout, use_banner, orig_cmdline);
+>              /* ignore errors */
+3305,3307c3381
+<   // u8 *fn = alloc_printf("%s/fuzzer_stats", out_dir);
+<   u8* fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+<   static s32 out_dir_fd;
+---
+>   u8 *fn = alloc_printf("%s/fuzzer_stats", out_dir);
+3315a3390,3391
+> #ifndef __sun
+> 
+3327a3404,3405
+> #endif /* !__sun */
+> 
+3392d3469
+<   // fn = alloc_printf("%s/.synced", local_out_dir);
+3427,3429c3504,3510
+<   fn = alloc_printf("%s/crashes/README.txt", out_dir);
+<   unlink(fn); /* Ignore errors */
+<   ck_free(fn);
+---
+>   if (!in_place_resume) {
+> 
+>     fn = alloc_printf("%s/crashes/README.txt", out_dir);
+>     unlink(fn); /* Ignore errors */
+>     ck_free(fn);
+> 
+>   }
+3440a3522,3523
+> #ifndef SIMPLE_FILES
+> 
+3444a3528,3535
+> #else
+> 
+>     u8* nfn = alloc_printf("%s_%04u%02u%02u%02u%02u%02u", fn,
+>                            t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+>                            t->tm_hour, t->tm_min, t->tm_sec);
+> 
+> #endif /* ^!SIMPLE_FILES */
+> 
+3461a3553,3554
+> #ifndef SIMPLE_FILES
+> 
+3465a3559,3566
+> #else
+> 
+>     u8* nfn = alloc_printf("%s_%04u%02u%02u%02u%02u%02u", fn,
+>                            t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+>                            t->tm_hour, t->tm_min, t->tm_sec);
+> 
+> #endif /* ^!SIMPLE_FILES */
+> 
+3477d3577
+<   // fn = alloc_printf("%s/.cur_input", local_out_dir);
+3482d3581
+<   // fn = alloc_printf("%s/fuzz_bitmap", local_out_dir);
+3487,3488c3586
+<     // fn  = alloc_printf("%s/fuzzer_stats", out_dir);
+<     fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+---
+>     fn  = alloc_printf("%s/fuzzer_stats", out_dir);
+3494d3591
+<   // fn = alloc_printf("%s/plot_data", local_out_dir);
+3627c3724,3725
+<           cYEL "american fuzzy lop (mod) ", use_banner);
+---
+>           cYEL "american fuzzy lop", use_banner);
+> 
+3660c3758,3764
+<     if (cycles_wo_finds > 20 && !pending_not_fuzzed) strcpy(tmp, cLGN);
+---
+> 
+>     if (cycles_wo_finds > 20 && !pending_not_fuzzed) {
+> 
+>       strcpy(tmp, cLGN);
+>       if (getenv("AFL_EXIT_WHEN_DONE")) stop_soon = 1;
+> 
+>     }
+3718c3822
+<   /* This gets funny becuse we want to print several variable-length variables
+---
+>   /* This gets funny because we want to print several variable-length variables
+3722,3724c3826,3827
+<   sprintf(tmp, "%s%s%d (%0.02f%%)", DI(current_entry),
+<           queue_cur && !queue_cur->favored ? "*" : ".",
+<           queue_cur?queue_cur->fuzz_level:-1,
+---
+>   sprintf(tmp, "%s%s (%0.02f%%)", DI(current_entry),
+>           queue_cur->favored ? "" : "*",
+3866,3875d3968
+<   u8 _tmp[256];
+<   memset(_tmp, ' ', banner_pad);
+<   if(sync_id)
+<     sprintf(_tmp, "%s|%s[%s]", DI(queued_imported), DI(sync_count), DI(sync_times));
+<   else
+<     sprintf(_tmp, "%s", (u8*)"n/a");
+< 
+<   // SAYF(bV bSTOP "  dictionary : " cNOR "%-37s " bSTG bV bSTOP
+<   //      "  imported : " cNOR "%-10s " bSTG bV "\n", tmp,
+<   //      sync_id ? DI(queued_imported) : (u8*)"n/a");
+3877,3878c3970,3972
+<        "  imported : " cNOR "%-10s " bSTG bV "\n", tmp, _tmp);
+<   
+---
+>        "  imported : " cNOR "%-10s " bSTG bV "\n", tmp,
+>        sync_id ? DI(queued_imported) : (u8*)"n/a");
+> 
+4041a4136,4139
+>   } else if (timeout_given == 3) {
+> 
+>     ACTF("Applying timeout settings from resumed session (%u ms).", exec_tmout);
+> 
+4107c4205
+<       // ACTF("run_target() 2");
+---
+> 
+4170c4268
+<     
+---
+> 
+4193a4292,4298
+>   if (post_handler) {
+> 
+>     out_buf = post_handler(out_buf, &len);
+>     if (!out_buf || !len) return 0;
+> 
+>   }
+> 
+4195c4300
+<   // ACTF("run_target() 3");
+---
+> 
+4274d4378
+<  
+4289c4393
+<      coverage translates to better targets. Multipler from 0.25x to 3x. */
+---
+>      coverage translates to better targets. Multiplier from 0.25x to 3x. */
+4327,4329c4431,4432
+<   u32 fuzz = getPaths(q->exec_cksum);
+<   perf_score = perf_score * ((u32) ( 1 << q->fuzz_level)) / (100 * (fuzz==0?1:fuzz));
+<   /* Make sure that we don't go over limit. */  
+---
+> 
+>   /* Make sure that we don't go over limit. */
+4331a4435
+> 
+4336a4441,4626
+> /* Helper function to see if a particular change (xor_val = old ^ new) could
+>    be a product of deterministic bit flips with the lengths and stepovers
+>    attempted by afl-fuzz. This is used to avoid dupes in some of the
+>    deterministic fuzzing operations that follow bit flips. We also
+>    return 1 if xor_val is zero, which implies that the old and attempted new
+>    values are identical and the exec would be a waste of time. */
+> 
+> static u8 could_be_bitflip(u32 xor_val) {
+> 
+>   u32 sh = 0;
+> 
+>   if (!xor_val) return 1;
+> 
+>   /* Shift left until first bit set. */
+> 
+>   while (!(xor_val & 1)) { sh++; xor_val >>= 1; }
+> 
+>   /* 1-, 2-, and 4-bit patterns are OK anywhere. */
+> 
+>   if (xor_val == 1 || xor_val == 3 || xor_val == 15) return 1;
+> 
+>   /* 8-, 16-, and 32-bit patterns are OK only if shift factor is
+>      divisible by 8, since that's the stepover for these ops. */
+> 
+>   if (sh & 7) return 0;
+> 
+>   if (xor_val == 0xff || xor_val == 0xffff || xor_val == 0xffffffff)
+>     return 1;
+> 
+>   return 0;
+> 
+> }
+> 
+> 
+> /* Helper function to see if a particular value is reachable through
+>    arithmetic operations. Used for similar purposes. */
+> 
+> static u8 could_be_arith(u32 old_val, u32 new_val, u8 blen) {
+> 
+>   u32 i, ov = 0, nv = 0, diffs = 0;
+> 
+>   if (old_val == new_val) return 1;
+> 
+>   /* See if one-byte adjustments to any byte could produce this result. */
+> 
+>   for (i = 0; i < blen; i++) {
+> 
+>     u8 a = old_val >> (8 * i),
+>        b = new_val >> (8 * i);
+> 
+>     if (a != b) { diffs++; ov = a; nv = b; }
+> 
+>   }
+> 
+>   /* If only one byte differs and the values are within range, return 1. */
+> 
+>   if (diffs == 1) {
+> 
+>     if ((u8)(ov - nv) <= ARITH_MAX ||
+>         (u8)(nv - ov) <= ARITH_MAX) return 1;
+> 
+>   }
+> 
+>   if (blen == 1) return 0;
+> 
+>   /* See if two-byte adjustments to any byte would produce this result. */
+> 
+>   diffs = 0;
+> 
+>   for (i = 0; i < blen / 2; i++) {
+> 
+>     u16 a = old_val >> (16 * i),
+>         b = new_val >> (16 * i);
+> 
+>     if (a != b) { diffs++; ov = a; nv = b; }
+> 
+>   }
+> 
+>   /* If only one word differs and the values are within range, return 1. */
+> 
+>   if (diffs == 1) {
+> 
+>     if ((u16)(ov - nv) <= ARITH_MAX ||
+>         (u16)(nv - ov) <= ARITH_MAX) return 1;
+> 
+>     ov = SWAP16(ov); nv = SWAP16(nv);
+> 
+>     if ((u16)(ov - nv) <= ARITH_MAX ||
+>         (u16)(nv - ov) <= ARITH_MAX) return 1;
+> 
+>   }
+> 
+>   /* Finally, let's do the same thing for dwords. */
+> 
+>   if (blen == 4) {
+> 
+>     if ((u32)(old_val - new_val) <= ARITH_MAX ||
+>         (u32)(new_val - old_val) <= ARITH_MAX) return 1;
+> 
+>     new_val = SWAP32(new_val);
+>     old_val = SWAP32(old_val);
+> 
+>     if ((u32)(old_val - new_val) <= ARITH_MAX ||
+>         (u32)(new_val - old_val) <= ARITH_MAX) return 1;
+> 
+>   }
+> 
+>   return 0;
+> 
+> }
+> 
+> 
+> /* Last but not least, a similar helper to see if insertion of an 
+>    interesting integer is redundant given the insertions done for
+>    shorter blen. The last param (check_le) is set if the caller
+>    already executed LE insertion for current blen and wants to see
+>    if BE variant passed in new_val is unique. */
+> 
+> static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
+> 
+>   u32 i, j;
+> 
+>   if (old_val == new_val) return 1;
+> 
+>   /* See if one-byte insertions from interesting_8 over old_val could
+>      produce new_val. */
+> 
+>   for (i = 0; i < blen; i++) {
+> 
+>     for (j = 0; j < sizeof(interesting_8); j++) {
+> 
+>       u32 tval = (old_val & ~(0xff << (i * 8))) |
+>                  (((u8)interesting_8[j]) << (i * 8));
+> 
+>       if (new_val == tval) return 1;
+> 
+>     }
+> 
+>   }
+> 
+>   /* Bail out unless we're also asked to examine two-byte LE insertions
+>      as a preparation for BE attempts. */
+> 
+>   if (blen == 2 && !check_le) return 0;
+> 
+>   /* See if two-byte insertions over old_val could give us new_val. */
+> 
+>   for (i = 0; i < blen - 1; i++) {
+> 
+>     for (j = 0; j < sizeof(interesting_16) / 2; j++) {
+> 
+>       u32 tval = (old_val & ~(0xffff << (i * 8))) |
+>                  (((u16)interesting_16[j]) << (i * 8));
+> 
+>       if (new_val == tval) return 1;
+> 
+>       /* Continue here only if blen > 2. */
+> 
+>       if (blen > 2) {
+> 
+>         tval = (old_val & ~(0xffff << (i * 8))) |
+>                (SWAP16(interesting_16[j]) << (i * 8));
+> 
+>         if (new_val == tval) return 1;
+> 
+>       }
+> 
+>     }
+> 
+>   }
+> 
+>   if (blen == 4 && check_le) {
+> 
+>     /* See if four-byte insertions could produce the same result
+>        (LE only). */
+> 
+>     for (j = 0; j < sizeof(interesting_32) / 4; j++)
+>       if (new_val == (u32)interesting_32[j]) return 1;
+> 
+>   }
+> 
+>   return 0;
+> 
+> }
+> 
+> 
+4338c4628
+<    function is a tad too long... returns 0 if fuzzed successfuly, 1 if
+---
+>    function is a tad too long... returns 0 if fuzzed successfully, 1 if
+4345c4635
+<   u64 /*havoc_queued,*/  orig_hit_cnt, new_hit_cnt;
+---
+>   u64 havoc_queued,  orig_hit_cnt, new_hit_cnt;
+4351a4642
+> 
+4361c4652
+<   /*if (pending_favored) { */
+---
+>   if (pending_favored) {
+4366,4367c4657,4658
+<     
+<     if ((/* queue_cur->was_fuzzed ||*/ !queue_cur->favored) &&
+---
+> 
+>     if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
+4369,4370d4659
+<   
+<   //} else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
+4372,4379c4661,4675
+<   //  /* Otherwise, still possibly skip non-favored cases, albeit less often.
+<   //     The odds of skipping stuff are higher for already-fuzzed inputs and
+<   //     lower for never-fuzzed entries. */
+<   //  if (queue_cycle > 1 && /* !queue_cur->was_fuzzed*/) {
+<   //    if (UR(100) < SKIP_NFAV_NEW_PROB) return 1;
+<   //  } else {
+<   //    if (UR(100) < SKIP_NFAV_OLD_PROB) return 1;
+<   //  }
+---
+>   } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
+> 
+>     /* Otherwise, still possibly skip non-favored cases, albeit less often.
+>        The odds of skipping stuff are higher for already-fuzzed inputs and
+>        lower for never-fuzzed entries. */
+> 
+>     if (queue_cycle > 1 && !queue_cur->was_fuzzed) {
+> 
+>       if (UR(100) < SKIP_NFAV_NEW_PROB) return 1;
+> 
+>     } else {
+> 
+>       if (UR(100) < SKIP_NFAV_OLD_PROB) return 1;
+> 
+>     }
+4381c4677
+<  //}
+---
+>   }
+4411c4707
+<   
+---
+> 
+4467d4762
+<   if (perf_score < 10) goto abandon_entry;
+4473c4768
+<   if (skip_deterministic || /* queue_cur->was_fuzzed*/ queue_cur->fuzz_level != 8 || queue_cur->passed_det)
+---
+>   if (skip_deterministic || queue_cur->was_fuzzed || queue_cur->passed_det)
+4535c4830
+<     if ((stage_cur & 7) == 7) {
+---
+>     if (!dumb_mode && (stage_cur & 7) == 7) {
+4749c5044
+<     if (!*(u16*)(eff_map + EFF_APOS(i))) {
+---
+>     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)]) {
+4785c5080,5081
+<     if (!*(u32*)(eff_map + EFF_APOS(i))) {
+---
+>     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)] &&
+>         !eff_map[EFF_APOS(i + 2)] && !eff_map[EFF_APOS(i + 3)]) {
+4840,4855c5136,5139
+<       /* Don't bother with arithmetics that produce results equivalent
+<          to previously-attempted bitflips. To evaluate this, we look at
+<          XOR of the values before and after the arithmetic operation, and
+<          compare them to XOR results that can be produced by bitflips.
+< 
+<          Single bitflips can yield 1, 2, 4, 8, 16, 32, 64, 128,
+<          Two-in-a-row can yield 1*, 3, 6, 12, 24, 48, 96, 128*, 192,
+<          Four in a row: 1*, 3*, 7, 15, 30, 60, 120, 128*, 192*, 224, 240,
+<          Full-byte flip (with a 1-byte stepover) takes care of 255.
+< 
+<        */
+< 
+<       if (r > 4 && r != 8  && r != 16 && r != 32 && r != 64 && r != 128 &&
+<           r != 6 && r != 12 && r != 24 && r != 48 && r != 96 && r != 192 &&
+<           r != 7 && r != 15 && r != 30 && r != 60 && r != 120 && r != 224 &&
+<           r != 240 && r != 255) {
+---
+>       /* Do arithmetic operations only if the result couldn't be a product
+>          of a bitflip. */
+> 
+>       if (!could_be_bitflip(r)) {
+4865c5149
+<       r = orig ^ (orig - j);
+---
+>       r =  orig ^ (orig - j);
+4867,4869c5151
+<       if (r > 4 && r != 8 && r != 16 && r != 32 && r != 64 && r != 128 &&
+<           r != 6 && r != 12 && r != 24 && r != 48 && r != 96 && r != 192 &&
+<           r != 15 && r != 30 && r != 60 && r != 120 && r != 240 && r != 255) {
+---
+>       if (!could_be_bitflip(r)) {
+4907c5189
+<     if (!*(u16*)(eff_map + EFF_APOS(i))) {
+---
+>     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)]) {
+4915a5198,5202
+>       u16 r1 = orig ^ (orig + j),
+>           r2 = orig ^ (orig - j),
+>           r3 = orig ^ SWAP16(SWAP16(orig) + j),
+>           r4 = orig ^ SWAP16(SWAP16(orig) - j);
+> 
+4918,4922c5205,5206
+<          & 0xff overflow checks).
+< 
+<          Since we're looking only at multi-byte operations, the
+<          overlap with bitflips will be relatively modest and we don't
+<          test for it here. */
+---
+>          & 0xff overflow checks) and if it couldn't be a product of
+>          a bitflip. */
+4926c5210
+<       if ((orig & 0xff) + j > 0xff) {
+---
+>       if ((orig & 0xff) + j > 0xff && !could_be_bitflip(r1)) {
+4936c5220
+<       if ((orig & 0xff) < j) {
+---
+>       if ((orig & 0xff) < j && !could_be_bitflip(r2)) {
+4950c5234,5235
+<       if ((orig >> 8) + j > 0xff) {
+---
+> 
+>       if ((orig >> 8) + j > 0xff && !could_be_bitflip(r3)) {
+4960c5245
+<       if ((orig >> 8) < j) {
+---
+>       if ((orig >> 8) < j && !could_be_bitflip(r4)) {
+4974a5260
+> 
+4997c5283,5284
+<     if (!*(u32*)(eff_map + EFF_APOS(i))) {
+---
+>     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)] &&
+>         !eff_map[EFF_APOS(i + 2)] && !eff_map[EFF_APOS(i + 3)]) {
+5005a5293,5297
+>       u32 r1 = orig ^ (orig + j),
+>           r2 = orig ^ (orig - j),
+>           r3 = orig ^ SWAP32(SWAP32(orig) + j),
+>           r4 = orig ^ SWAP32(SWAP32(orig) - j);
+> 
+5011c5303
+<       if ((orig & 0xffff) + j > 0xffff) {
+---
+>       if ((orig & 0xffff) + j > 0xffff && !could_be_bitflip(r1)) {
+5021c5313
+<       if ((orig & 0xffff) < j) {
+---
+>       if ((orig & 0xffff) < j && !could_be_bitflip(r2)) {
+5034,5035c5326,5327
+<  
+<       if ((SWAP32(orig) & 0xffff) + j > 0xffff) {
+---
+> 
+>       if ((SWAP32(orig) & 0xffff) + j > 0xffff && !could_be_bitflip(r3)) {
+5045c5337
+<       if ((SWAP32(orig) & 0xffff) < j) {
+---
+>       if ((SWAP32(orig) & 0xffff) < j && !could_be_bitflip(r4)) {
+5098,5100c5390
+<       /* Skip if the new and original values are the same, or are within
+<          +/- ARITH_MAX (in the latter case, we already tried this number
+<          during the arith steps). */
+---
+>       /* Skip if the value could be a product of bitflips or arithmetics. */
+5102,5103c5392,5393
+<       if (((u8)(interesting_8[j] - orig)) <= ARITH_MAX ||
+<           ((u8)(orig - interesting_8[j])) <= ARITH_MAX) {
+---
+>       if (could_be_bitflip(orig ^ (u8)interesting_8[j]) ||
+>           could_be_arith(orig, (u8)interesting_8[j], 1)) {
+5142c5432
+<     if (!*(u16*)(eff_map + EFF_APOS(i))) {
+---
+>     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)]) {
+5151,5153d5440
+<       u8 i_msb = ((u16)interesting_16[j]) >> 8,
+<          o_msb = orig >> 8;
+< 
+5156,5159c5443,5444
+<       /* Skip if values are the same or if both the orig value and
+<          the current candidate have the same MSB value and are a
+<          small integer - in which case, we covered this op while
+<          working on interesting_8. */
+---
+>       /* Skip if this could be a product of a bitflip, arithmetics,
+>          or single-byte interesting value insertion. */
+5161,5162c5446,5448
+<       if (interesting_16[j] != orig && 
+<           (i_msb != o_msb || (o_msb != 0 && o_msb != 0xff))) {
+---
+>       if (!could_be_bitflip(orig ^ (u16)interesting_16[j]) &&
+>           !could_be_arith(orig, (u16)interesting_16[j], 2) &&
+>           !could_be_interest(orig, (u16)interesting_16[j], 2, 0)) {
+5173,5177c5459,5462
+<       o_msb = orig;
+< 
+<       if (SWAP16(interesting_16[j]) != interesting_16[j] && 
+<           SWAP16(interesting_16[j]) != orig &&
+<           (i_msb != o_msb || (o_msb != 0 && o_msb != 0xff))) {
+---
+>       if ((u16)interesting_16[j] != SWAP16(interesting_16[j]) &&
+>           !could_be_bitflip(orig ^ SWAP16(interesting_16[j])) &&
+>           !could_be_arith(orig, SWAP16(interesting_16[j]), 2) &&
+>           !could_be_interest(orig, SWAP16(interesting_16[j]), 2, 1)) {
+5215c5500,5501
+<     if (!*(u32*)(eff_map + EFF_APOS(i))) {
+---
+>     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)] &&
+>         !eff_map[EFF_APOS(i + 2)] && !eff_map[EFF_APOS(i + 3)]) {
+5224,5226d5509
+<       u16 i_msb = ((u32)interesting_32[j]) >> 16,
+<           o_msb = orig >> 16;
+< 
+5229,5230c5512,5517
+<       if (interesting_32[j] != orig &&
+<           (i_msb != o_msb || (o_msb != 0 && o_msb != 0xffff))) {
+---
+>       /* Skip if this could be a product of a bitflip, arithmetics,
+>          or word interesting value insertion. */
+> 
+>       if (!could_be_bitflip(orig ^ (u32)interesting_32[j]) &&
+>           !could_be_arith(orig, interesting_32[j], 4) &&
+>           !could_be_interest(orig, interesting_32[j], 4, 0)) {
+5241,5245c5528,5531
+<       o_msb = SWAP32(orig) >> 16;
+< 
+<       if (SWAP32(interesting_32[j]) != interesting_32[j] && 
+<           SWAP32(interesting_32[j]) != orig &&
+<           (i_msb != o_msb || (o_msb != 0 && o_msb != 0xffff))) {
+---
+>       if ((u32)interesting_32[j] != SWAP32(interesting_32[j]) &&
+>           !could_be_bitflip(orig ^ SWAP32(interesting_32[j])) &&
+>           !could_be_arith(orig, SWAP32(interesting_32[j]), 4) &&
+>           !could_be_interest(orig, SWAP32(interesting_32[j]), 4, 1)) {
+5435,5437d5720
+< //in the first stage only do deterministic stuff
+< if (queue_cur->fuzz_level == 0) goto abandon_entry;
+< 
+5474c5757
+<   //havoc_queued = queued_paths;
+---
+>   havoc_queued = queued_paths;
+5481c5764
+<     u32 use_stacking = 1 << UR(HAVOC_STACK_POW2 + 1);
+---
+>     u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
+5860,5867c6143,6152
+<     //if (queued_paths != havoc_queued) {
+<     //  if (!screening && 
+<     //       perf_score <= HAVOC_MAX_MULT * 100) {
+<     //    stage_max  *= 2;
+<     //    perf_score *= 2;
+<     //  }
+<     //  havoc_queued = queued_paths;
+<     //}
+---
+>     if (queued_paths != havoc_queued) {
+> 
+>       if (perf_score <= HAVOC_MAX_MULT * 100) {
+>         stage_max  *= 2;
+>         perf_score *= 2;
+>       }
+> 
+>       havoc_queued = queued_paths;
+> 
+>     }
+5918,5919c6203,6204
+<     //while (tid >= 100) { target = target->next_100; tid -= 100; }
+<     while (tid-- && target->next ) target = target->next;
+---
+>     while (tid >= 100) { target = target->next_100; tid -= 100; }
+>     while (tid--) target = target->next;
+5982,5988c6267,6270
+<   if (!stop_soon && !queue_cur->cal_failed && /* !queue_cur->was_fuzzed*/ queue_cur->fuzz_level==0 ) {
+<     //if (screening) queue_cur->was_screened = 1;
+<     //else {
+<       //queue_cur->was_fuzzed = 1;
+<       pending_not_fuzzed--;
+<       if (queue_cur->favored) pending_favored--;
+<     //}
+---
+>   if (!stop_soon && !queue_cur->cal_failed && !queue_cur->was_fuzzed) {
+>     queue_cur->was_fuzzed = 1;
+>     pending_not_fuzzed--;
+>     if (queue_cur->favored) pending_favored--;
+5990d6271
+<   queue_cur->fuzz_level++;  
+6005,6022d6285
+< static int startswith(const char *str, const char *prefix)
+< {
+<     return strncmp(prefix, str, strlen(prefix)) == 0;
+< }
+< 
+< 
+< static int endswith(const char *str, const char *suffix)
+< {
+<   if (!str || !suffix)
+<     return 0;
+<   size_t lenstr = strlen(str);
+<   size_t lensuffix = strlen(suffix);
+<   if (lensuffix >  lenstr)
+<     return 0;
+<   return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
+< }
+< 
+< 
+6027,6028d6289
+<   sync_times++;
+< 
+6039,6040d6299
+<   int from_which = 0;
+< 
+6058,6061d6316
+<     if (!strcmp(sync_dir, out_dir))
+<     {
+<       if(!startswith(sd_ent->d_name, "s2e") && !endswith(sd_ent->d_name, "filter") && !startswith(sd_ent->d_name, "traffic")) continue;
+<     }
+6064,6076d6318
+<     if(startswith(sd_ent->d_name, "s2e"))
+<     {
+<       from_which = S2E_SRC;
+<     }
+<     else if(startswith(sd_ent->d_name, "traffic"))
+<     {
+<       from_which = TRA_SRC;
+<     }
+<     else
+<     {
+<       from_which = FUZ_SRC;
+<     }
+< 
+6087d6328
+<     // qd_synced_path = alloc_printf("%s/.synced/%s", local_out_dir, sd_ent->d_name);
+6115c6356
+<           sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || 
+---
+>           sscanf(qd_ent->d_name, CASE_PREFIX "%06u", &syncing_case) != 1 || 
+6134,6137d6374
+<         sync_count++;
+<         checked_paths[from_which]++;
+< 
+< 
+6147c6384
+<         // ACTF("run_target() 4");
+---
+> 
+6153,6157c6390
+<         u8 save_or_not = save_if_interesting(argv, mem, st.st_size, fault);
+<         // queued_imported += save_if_interesting(argv, mem, st.st_size, fault);
+<         queued_imported += save_or_not;
+<         imported_paths[from_which] += save_or_not;
+< 
+---
+>         queued_imported += save_if_interesting(argv, mem, st.st_size, fault);
+6185d6417
+< 
+6238c6470
+<   ACTF("Validating target binary: %s...", fname);
+---
+>   ACTF("Validating target binary...");
+6320,6321d6551
+<   // if (f_data[0] != 0x7f || memcmp(f_data + 1, "CGC", 3))
+<   //   FATAL("Program '%s' is not an CGC binary", target_path);
+6450,6451c6680
+<        "  -Q            - use binary-only instrumentation (QEMU mode)\n\n" 
+<        "  -L            - maintain logs under QEMU mode\n\n"   
+---
+>        "  -Q            - use binary-only instrumentation (QEMU mode)\n\n"     
+6474,6484d6702
+< /* Prepare output fds for qemu_log*/
+< static void setup_qemu_log_fd(void)
+< {
+<   if(!qemu_mode) FATAL("qemu_log only supported under qemu_mode");
+< 
+<   u8* tmp = alloc_printf("%s/qemu_log", out_dir);
+<   qemu_log_fd = open(tmp, O_RDWR|O_CREAT, 0600);
+<   if(qemu_log_fd < 0) PFATAL("unalbe to open %s", tmp);
+<   ck_free(tmp);
+< 
+< }
+6507a6726,6734
+>     out_dir_fd = open(out_dir, O_RDONLY);
+> 
+> #ifndef __sun
+> 
+>     if (out_dir_fd < 0 || flock(out_dir_fd, LOCK_EX | LOCK_NB))
+>       PFATAL("Unable to flock() output directory.");
+> 
+> #endif /* !__sun */
+> 
+6551,6552c6778
+<     
+<     mkdir(remote_out_dir, 0700);
+---
+> 
+6554d6779
+<     // tmp = alloc_printf("%s/.synced/", local_out_dir);
+6573a6799,6802
+>   tmp = alloc_printf("%s/strace_log", out_dir);
+>   dev_strace_fd = open(tmp, O_WRONLY | O_CREAT, 0600);
+>   if(dev_strace_fd < 0) PFATAL("Unable to open strace_log");  
+> 
+6583d6811
+<   // tmp = alloc_printf("%s/plot_data", local_out_dir);
+6604d6831
+<   // u8* fn = alloc_printf("%s/.cur_input", local_out_dir);
+6629c6856
+<   if (system("launchctl bslist 2>/dev/null | grep -q '\\.ReportCrash$'")) return;
+---
+>   if (system("launchctl list 2>/dev/null | grep -q '\\.ReportCrash$'")) return;
+6840c7067
+<   if (strlen(sync_id) > 64) FATAL("Fuzzer ID too long");
+---
+>   if (strlen(sync_id) > 32) FATAL("Fuzzer ID too long");
+6844,6847c7071
+<   if(!sync_dir)
+<   {
+<     sync_dir = out_dir;
+<   }
+---
+>   sync_dir = out_dir;
+6902d7125
+<       {
+6904,6905d7126
+<         // out_file = alloc_printf("%s/.cur_input", local_out_dir);
+<       }
+6975a7197,7199
+> 
+> /* Rewrite argv for QEMU. */
+> 
+6978,6979c7202,7211
+<   /* First we should set the target_path to afl-qemu-trace */
+<   u8* tmp, *cp, *rsl, *own_copy;
+---
+>   char** new_argv = ck_alloc(sizeof(char*) * (argc + 4));
+>   u8 *tmp, *cp, *rsl, *own_copy;
+> 
+>   memcpy(new_argv + 3, argv + 1, sizeof(char*) * argc);
+> 
+>   new_argv[2] = target_path;
+>   new_argv[1] = "-strace";
+> 
+>   /* Now we need to actually find the QEMU binary to put in argv[0]. */
+> 
+6981,6982c7213,7215
+<   if (tmp) 
+<   {
+---
+> 
+>   if (tmp) {
+> 
+6988,6989c7221,7223
+<     target_path =  cp;
+<     goto set_tp_done;
+---
+>     target_path = new_argv[0] = cp;
+>     return new_argv;
+> 
+6994,6995c7228,7230
+<   if (rsl) 
+<   {
+---
+> 
+>   if (rsl) {
+> 
+6996a7232
+> 
+6999,7002c7235,7240
+<     if (!access(cp, X_OK)) 
+<     {
+<       target_path =  cp;
+<       goto set_tp_done;
+---
+> 
+>     if (!access(cp, X_OK)) {
+> 
+>       target_path = new_argv[0] = cp;
+>       return new_argv;
+> 
+7006,7010c7244,7249
+<   
+<   if (!access(AFL_PATH "/afl-qemu-trace", X_OK)) 
+<   {
+<     target_path =  ck_strdup(AFL_PATH "/afl-qemu-trace");
+<     goto set_tp_done;
+---
+> 
+>   if (!access(BIN_PATH "/afl-qemu-trace", X_OK)) {
+> 
+>     target_path = new_argv[0] = ck_strdup(BIN_PATH "/afl-qemu-trace");
+>     return new_argv;
+> 
+7014,7021c7253,7260
+<          "Oops, unable to find the 'afl-qemu-trace' binary. The binary must be built\n"
+<          "    separately by following the instructions in qemu_mode/README.qemu. If you\n"
+<          "    already have the binary installed, you may need to specify AFL_PATH in the\n"
+<          "    environment.\n\n"
+< 
+<          "    Of course, even without QEMU, afl-fuzz can still work with binaries that are\n"
+<          "    instrumented at compile time with afl-gcc. It is also possible to use it as a\n"
+<          "    traditional \"dumb\" fuzzer by specifying '-n' in the command line.\n");
+---
+>        "Oops, unable to find the 'afl-qemu-trace' binary. The binary must be built\n"
+>        "    separately by following the instructions in qemu_mode/README.qemu. If you\n"
+>        "    already have the binary installed, you may need to specify AFL_PATH in the\n"
+>        "    environment.\n\n"
+> 
+>        "    Of course, even without QEMU, afl-fuzz can still work with binaries that are\n"
+>        "    instrumented at compile time with afl-gcc. It is also possible to use it as a\n"
+>        "    traditional \"dumb\" fuzzer by specifying '-n' in the command line.\n");
+7024,7040c7263
+<   
+< set_tp_done:  
+<   ACTF("reset target_path is done");
+<   char** new_argv = ck_alloc(sizeof(char*) * argc * 4);
+<   int i;
+<   for(i=0; i<argc; i++)
+<   {
+<     int th = i * 4;
+<     new_argv[th] = target_path;
+<     if(is_qemu_log)
+<       new_argv[th+1] = "-strace";
+<     else
+<       new_argv[th+1] = "--";
+<     new_argv[th+2] = ck_strdup(argv[i]);
+<     new_argv[th+3] = NULL;
+<   } 
+<   return new_argv;
+---
+> 
+7071,7084d7293
+< // void backup_stat(char** stat_vector, int cnt)
+< // {
+< //   char filepath[] = "/home/vagrant/cc_server/afl_fuzz_stat.txt";
+< //   FILE* pFile = fopen(filepath, "w+");
+< //   if(pFile != NULL) 
+< //   {
+< //     int i;
+< //     for(i = 0; i < cnt; i++ )
+< //     {
+< //       fprintf(pFile, "%s\n", stat_vector[i]);
+< //     }
+< //     fclose(pFile);
+< //   }
+< // }
+7095,7096d7303
+<   // Allocate memory for hashmaps
+<   cksum2paths = kh_init(32);  
+7100,7101c7307
+<   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " (" __DATE__ " " __TIME__ 
+<        ") by <lcamtuf@google.com>\n");
+---
+>   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
+7105,7106c7311
+<   // local_out_dir = alloc_printf("/home/vagrant/local_outputs");
+<   remote_out_dir = alloc_printf("/home/vagrant/shared_outputs");
+---
+>   while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QL")) > 0)
+7108,7110d7312
+<   while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QLs:")) > 0) 
+<   {
+<     // ACTF("opt: %c", opt);
+7112a7315,7318
+>       case 'L':
+>         turn_strace_on = 1;
+>         break;
+> 
+7126d7331
+<         // local_out_dir = alloc_printf("/home/vagrant/local_outputs");
+7137d7341
+<         // local_out_dir = alloc_printf("%s/%s", local_out_dir, sync_id);
+7139,7144d7342
+<         remote_out_dir = alloc_printf("%s/%s", remote_out_dir, sync_id);
+<         break;
+< 
+<       case 's':
+<         if(sync_dir) FATAL("Multiple -s options not supported");
+<         sync_dir = optarg;
+7165,7166c7363,7364
+<           if (sscanf(optarg, "%u%c", &exec_tmout, &suffix) < 1)
+<             FATAL("Bad syntax used for -t");
+---
+>           if (sscanf(optarg, "%u%c", &exec_tmout, &suffix) < 1 ||
+>               optarg[0] == '-') FATAL("Bad syntax used for -t");
+7190,7191c7388,7389
+<           if (sscanf(optarg, "%llu%c", &mem_limit, &suffix) < 1)
+<             FATAL("Bad syntax used for -m");
+---
+>           if (sscanf(optarg, "%llu%c", &mem_limit, &suffix) < 1 ||
+>               optarg[0] == '-') FATAL("Bad syntax used for -m");
+7267,7271d7464
+<       case 'L':
+< 
+<         if(is_qemu_log) FATAL("Multiple -L options not supported");
+<         is_qemu_log = 1;
+<         break;
+7277d7469
+<   }
+7296,7298c7488,7492
+<   if (getenv("AFL_NO_FORKSRV"))   no_forkserver    = 1;
+<   if (getenv("AFL_NO_CPU_RED"))   no_cpu_meter_red = 1;
+<   if (getenv("AFL_NO_VAR_CHECK")) no_var_check     = 1;
+---
+>   if (getenv("AFL_NO_FORKSRV")) no_forkserver    = 1;
+>   if (getenv("AFL_NO_CPU_RED")) no_cpu_meter_red = 1;
+> 
+>   if (getenv("AFL_NO_VAR_CHECK") || getenv("AFL_PERSISTENT"))
+>     no_var_check = 1;
+7312a7507
+>   setup_post();
+7316,7319d7510
+< 
+<   if(is_qemu_log)
+<     setup_qemu_log_fd();
+< 
+7326a7518,7519
+>   if (!timeout_given) find_timeout();
+> 
+7331,7338c7524
+<   stat_vector[0] = out_dir;
+<   int _i = 0;
+<   while(argv[optind+_i])
+<   {
+<     check_binary(argv[optind + _i]);
+<     stat_vector[_i+1] = argv[optind + _i];
+<     _i++;
+<   }
+---
+>   check_binary(argv[optind]);
+7341c7527
+<  
+---
+> 
+7345,7353c7531
+<     use_argv = argv + optind; 
+< 
+<   int _j;
+<   for(_j=0; _j<3; _j++)
+<     ACTF("use_argv[%i]: %s", _j , use_argv[_j]);
+< 
+<   ACTF("use_argv[%i]: 0x%02lx", 3, (unsigned long int)use_argv[3]);
+<   
+<   ACTF("target_path_: %s", target_path);
+---
+>     use_argv = argv + optind;
+7357,7360d7534
+<   // backup_stat(stat_vector, num_of_cbs + 1);
+< 
+<   // goto stop_fuzzing;
+<   
+7429a7604
+> 
+7431,7433c7606,7607
+<     
+<     //queue_cur = queue_cur->next;
+<     chooseNext_queue_cur();
+---
+> 
+>     queue_cur = queue_cur->next;
+7462,7464d7635
+<   
+<   // De-allocate memory for hashmaps
+<   kh_destroy(32, cksum2paths);

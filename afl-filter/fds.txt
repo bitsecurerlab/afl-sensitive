@@ -1,0 +1,14 @@
+total 0
+dr-x------ 2 root root  0 Oct 21 15:07 ./
+dr-xr-xr-x 9 root root  0 Oct 21 15:07 ../
+lrwx------ 1 root root 64 Oct 21 15:07 0 -> /mnt/exp-cgc/dryrun/5c921501/outputs/t1/.cur_input
+lrwx------ 1 root root 64 Oct 21 15:07 1 -> /dev/null
+lr-x------ 1 root root 64 Oct 21 15:07 198 -> pipe:[1934656]
+l-wx------ 1 root root 64 Oct 21 15:07 199 -> pipe:[1934655]
+l-wx------ 1 root root 64 Oct 21 15:07 2 -> /home/vagrant/afl-qemu/log.txt
+lrwx------ 1 root root 64 Oct 21 15:07 3 -> socket:[1934652]
+lrwx------ 1 root root 64 Oct 21 15:07 4 -> socket:[1934653]
+lr-x------ 1 root root 64 Oct 21 15:07 5 -> /mnt/exp-cgc/dryrun/5c921501/outputs/t1/
+lr-x------ 1 root root 64 Oct 21 15:07 6 -> /home/vagrant/afl-qemu/info_1.txt
+lr-x------ 1 root root 64 Oct 21 15:07 7 -> /dev/urandom
+l-wx------ 1 root root 64 Oct 21 15:07 8 -> /mnt/exp-cgc/dryrun/5c921501/outputs/t1/plot_data

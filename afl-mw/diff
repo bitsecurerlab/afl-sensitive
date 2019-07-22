@@ -1,0 +1,163 @@
+26d25
+< // #define CHILD_DEBUG
+76a76
+>           *local_out_dir,
+84a85
+> 
+173c174
+<            first_crash_time = 0,
+---
+>            first_crash_time = 0,      /* Add for cgc                      */
+584a586
+> 
+693c695,696
+<   fname = alloc_printf("%s/fuzz_bitmap", out_dir);
+---
+>   // fname = alloc_printf("%s/fuzz_bitmap", out_dir);
+>   fname = alloc_printf("%s/fuzz_bitmap", local_out_dir);
+1839d1841
+< #ifndef CHILD_DEBUG
+1844,1845d1845
+< #endif
+< 
+2132d2131
+< #ifndef CHILD_DEBUG
+2135c2134
+< #endif
+---
+> 
+2175c2174
+<       if ((res = write(fsrv_ctl_fd[i], status + i, 4)) != 4) {     //tag 1
+---
+>       if ((res = write(fsrv_ctl_fd[i], status + i, 4)) != 4) {
+2183c2182
+<       if ((res = read(fsrv_st_fd[i], child_pid + i, 4)) != 4) {       //tag 2
+---
+>       if ((res = read(fsrv_st_fd[i], child_pid + i, 4)) != 4) {
+2217c2216
+<       if ((res = read(fsrv_st_fd[i], status + i, 4)) != 4) {       //tag 3
+---
+>       if ((res = read(fsrv_st_fd[i], status + i, 4)) != 4) {
+2394,2395c2393
+<     // ACTF("run_target() 1 at stage_cur: %d", stage_cur);
+<     // fprintf(stderr, "\n=========================stage_cur: %d=========================\n", stage_cur);
+---
+>     // ACTF("run_target() 1 at staget_cur: %d", stage_cur);
+2410d2407
+< 
+2416c2413
+<       if (!no_var_check && q->exec_cksum ) {
+---
+>       if (!no_var_check && q->exec_cksum) {
+2513d2509
+<     // fprintf(stderr,"Attempting dry run with '%s'...", fn);
+3145,3169c3141,3165
+<   fprintf(f, "start_time     : %llu\n"
+<              "last_update    : %llu\n"
+<              "fuzzer_pid     : %u\n"
+<              "first_crash_time : %llu\n"
+<              "last_crash_time  : %llu\n"
+<              "cycles_done    : %llu\n"
+<              "execs_done     : %llu\n"
+<              "execs_per_sec  : %0.02f\n"
+<              "paths_total    : %u\n"
+<              "paths_found    : %u\n"
+<              "paths_imported : %u\n"
+<              "max_depth      : %u\n"
+<              "cur_path       : %u\n"
+<              "pending_favs   : %u\n"
+<              "pending_total  : %u\n"
+<              "variable_paths : %u\n"
+<              "bitmap_cvg     : %0.02f%%\n"
+<              "unique_crashes : %llu\n"
+<              "unique_hangs   : %llu\n"
+<              "imported_paths : %u\n"
+<              "checked_paths  : %i\n"
+<              "sync_times     : %i\n"
+<              "afl_banner     : %s\n"
+<              "afl_version    : " VERSION "\n"
+<              "command_line   : %s\n",
+---
+>   fprintf(f, "start_time            : %llu\n"
+>              "last_update           : %llu\n"
+>              "fuzzer_pid            : %u\n"
+>              "first_crash_time      : %llu\n"
+>              "last_crash_time       : %llu\n"
+>              "cycles_done           : %llu\n"
+>              "execs_done            : %llu\n"
+>              "execs_per_sec         : %0.02f\n"
+>              "paths_total           : %u\n"
+>              "paths_found           : %u\n"
+>              "paths_imported        : %u\n"
+>              "max_depth             : %u\n"
+>              "cur_path              : %u\n"
+>              "pending_favs          : %u\n"
+>              "pending_total         : %u\n"
+>              "variable_paths        : %u\n"
+>              "bitmap_cvg            : %0.02f%%\n"
+>              "unique_crashes        : %llu\n"
+>              "unique_hangs          : %llu\n"
+>              "imported_paths        : %u\n"
+>              "checked_paths         : %i\n"
+>              "sync_times            : %i\n"
+>              "afl_banner            : %s\n"
+>              "afl_version           : " VERSION "\n"
+>              "command_line          : %s\n",
+3171c3167
+<              first_crash_time / 1000, last_crash_time / 1000,
+---
+>              first_crash_time / 1000, last_crash_time /1000,
+3439c3435,3436
+<   fn = alloc_printf("%s/.synced", out_dir);
+---
+>   // fn = alloc_printf("%s/.synced", out_dir);
+>   fn = alloc_printf("%s/.synced", local_out_dir);
+3523c3520,3521
+<   fn = alloc_printf("%s/.cur_input", out_dir);
+---
+>   // fn = alloc_printf("%s/.cur_input", out_dir);
+>   fn = alloc_printf("%s/.cur_input", local_out_dir);
+3527c3525,3526
+<   fn = alloc_printf("%s/fuzz_bitmap", out_dir);
+---
+>   // fn = alloc_printf("%s/fuzz_bitmap", out_dir);
+>   fn = alloc_printf("%s/fuzz_bitmap", local_out_dir);
+3537c3536
+<   fn = alloc_printf("%s/plot_data", out_dir);
+---
+>   fn = alloc_printf("%s/plot_data", local_out_dir);
+6104c6103,6104
+<     qd_synced_path = alloc_printf("%s/.synced/%s", out_dir, sd_ent->d_name);
+---
+>     // qd_synced_path = alloc_printf("%s/.synced/%s", out_dir, sd_ent->d_name);
+>     qd_synced_path = alloc_printf("%s/.synced/%s", local_out_dir, sd_ent->d_name);
+6518a6519
+>     ck_free(tmp);
+6588c6589,6590
+<     tmp = alloc_printf("%s/.synced/", out_dir);
+---
+>     // tmp = alloc_printf("%s/.synced/", out_dir);
+>     tmp = alloc_printf("%s/.synced/", local_out_dir);
+6616c6618,6619
+<   tmp = alloc_printf("%s/plot_data", out_dir);
+---
+>   // tmp = alloc_printf("%s/plot_data", out_dir);
+>   tmp = alloc_printf("%s/plot_data", local_out_dir);
+6636c6639,6640
+<   u8* fn = alloc_printf("%s/.cur_input", out_dir);
+---
+>   // u8* fn = alloc_printf("%s/.cur_input", out_dir);
+>   u8* fn = alloc_printf("%s/.cur_input", local_out_dir);
+6931c6935,6938
+<         out_file = alloc_printf("%s/.cur_input", out_dir);
+---
+>       {
+>         // out_file = alloc_printf("%s/.cur_input", out_dir);
+>         out_file = alloc_printf("%s/.cur_input", local_out_dir);
+>       }
+7146a7154,7155
+>         // local_out_dir = alloc_printf("/home/vagrant/local_outputs");
+>         local_out_dir = alloc_printf("/home/vagrant/local_outputs");
+7313,7314d7321
+< 
+<   // no_var_check     = 1;

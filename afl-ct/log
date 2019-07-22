@@ -1,0 +1,2 @@
+Reserved 0xf7000000 bytes of guest address space
+host mmap_min_addr=0x10000

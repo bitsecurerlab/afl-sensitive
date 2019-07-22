@@ -1,0 +1,132 @@
+72c72
+< /* Set on the child in forkserver mode: */
+---
+> /* Set in the child process in forkserver mode: */
+75,81c75
+< 
+< 
+< /* the id for multiple CBs*/
+< static int cb_id = -1;
+< 
+< /*current TSL_FD for the specific CB*/
+< static int cur_tsl_fd;
+---
+> unsigned int afl_forksrv_pid;
+117,119d110
+<   //fprintf(stderr, "[&]afl_setup\n");
+<   // char *id_str = getenv(SHM_ENV_VAR),
+<   char *inst_r = getenv("AFL_INST_RATIO");
+121c112,113
+<   int shm_id = -1;
+---
+>   char *id_str = getenv(SHM_ENV_VAR),
+>        *inst_r = getenv("AFL_INST_RATIO");
+123,124c115
+<   if ((read(FORKSRV_FD, &cb_id, 4) != 4) || (read(FORKSRV_FD, &shm_id, 4) != 4))
+<     return;
+---
+>   int shm_id;
+139,147c130,132
+<   if(cb_id != -1)
+<   {
+<     cur_tsl_fd = TSL_FD - cb_id;
+<   }else exit(1);
+<   // if (id_str) {
+< 
+<   //   shm_id = atoi(id_str);
+<   if(shm_id != -1)
+<   {
+---
+>   if (id_str) {
+> 
+>     shm_id = atoi(id_str);
+152c137,143
+<   }else exit(1);
+---
+>     /* With AFL_INST_RATIO set to a low value, we want to touch the bitmap
+>        so that the parent doesn't give up on us. */
+> 
+>     if (inst_r) afl_area_ptr[0] = 1;
+> 
+> 
+>   }
+160c151
+<   //fprintf(stderr, "[&]afl_start_code: 0x%x | afl_end_code: 0x%x\n", afl_start_code, afl_end_code);
+---
+> 
+167c158
+<   //fprintf(stderr, "[%]afl_forkserver\n");
+---
+> 
+176a168,169
+>   afl_forksrv_pid = getpid();
+> 
+179d171
+<   //fprintf(stderr, "[%]#0\n");
+187c179
+<     if (read(FORKSRV_FD, tmp, 4) != 4) exit(2); //forked exec start to run 
+---
+>     if (read(FORKSRV_FD, tmp, 4) != 4) exit(2);
+192,193c184
+<     // if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) exit(3);
+<     if (pipe(t_fd) || dup2(t_fd[1], cur_tsl_fd) < 0) exit(3);
+---
+>     if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) exit(3);
+213,214c204
+<     // close(TSL_FD);
+<     close(cur_tsl_fd);
+---
+>     close(TSL_FD);
+219c209
+<     //fprintf(stderr, "[%]#1\n");
+---
+> 
+223,224c213,214
+<     //fprintf(stderr, "[%]#1\n");
+<     if (waitpid(child_pid, &status, WUNTRACED) < 0) exit(6);
+---
+> 
+>     if (waitpid(child_pid, &status, 0) < 0) exit(6);
+272c262
+<   // fprintf(stderr, "[#]afl_request_tsl(pc=0x%x, cb=0x%x, )\n", pc, cb);
+---
+> 
+274c264
+<   // fprintf(stderr, "[#]fork_child\n");
+---
+> 
+278,280c268,269
+<   // fprintf(stderr, "[#]->write(cur_tsl_fd=%d,,)\n", cur_tsl_fd);
+<   // if (write(TSL_FD, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl))
+<   if (write(cur_tsl_fd, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl))
+---
+> 
+>   if (write(TSL_FD, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl))
+282c271
+<   // fprintf(stderr, "[#]end-\n");
+---
+> 
+292c281
+<   // fprintf(stderr, "[*]afl_wait_tsl()\n");
+---
+> 
+294c283
+<     // fprintf(stderr, "[*]while starts\n");
+---
+> 
+299,305c288,290
+<     // fprintf(stderr, "[*]t.pc: 0x%x | t.cs_base: 0x%x\n", t.pc, t.cs_base);
+<     //do not cache for dynamically generated code
+<     if((t.pc >= afl_start_code) && (t.pc <= afl_end_code))
+<       tb_find_slow(env, t.pc, t.cs_base, t.flags);
+<     // else
+<       // fprintf(stderr, "[*]no cache for JIT code\n");
+<     // fprintf(stderr, "[*]while ends--\n");
+---
+> 
+>     tb_find_slow(env, t.pc, t.cs_base, t.flags);
+> 
+309c294
+<   // fprintf(stderr, "[*]ret\n");
+---
+> 
