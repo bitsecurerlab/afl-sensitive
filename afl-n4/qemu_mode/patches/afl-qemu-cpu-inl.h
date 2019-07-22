@@ -28,10 +28,19 @@
 
 #include <sys/shm.h>
 #include "../../config.h"
+#include <glib.h>
+
 
 /***************************
  * VARIOUS AUXILIARY STUFF *
  ***************************/
+
+ // FILE* ma_info_logfile = NULL;
+
+
+
+
+ // FILE * g_fp_array[4096];
 
 /* A snippet patched into tb_find_slow to inform the parent process that
    we have hit a new block that hasn't been translated yet, and to tell
@@ -68,10 +77,17 @@ abi_ulong afl_entry_point, /* ELF entry point (_start) */
           afl_start_code,  /* .text start pointer      */
           afl_end_code;    /* .text end pointer        */
 
-/* Set in the child process in forkserver mode: */
+/* Set on the child in forkserver mode: */
 
-static unsigned char afl_fork_child;
-unsigned int afl_forksrv_pid;
+// static unsigned char afl_fork_child;
+unsigned char afl_fork_child;
+
+
+/* the id for multiple CBs*/
+static int cb_id = -1;
+
+/*current TSL_FD for the specific CB*/
+static int cur_tsl_fd;
 
 /* Instrumentation ratio: */
 
@@ -81,7 +97,6 @@ static unsigned int afl_inst_rms = MAP_SIZE;
 
 static void afl_setup(void);
 static void afl_forkserver(CPUArchState*);
-// static inline void afl_maybe_log(abi_ulong);
 void afl_maybe_log(abi_ulong, abi_ulong);
 
 static void afl_wait_tsl(CPUArchState*, int);
@@ -89,6 +104,9 @@ static void afl_request_tsl(target_ulong, target_ulong, uint64_t);
 
 static TranslationBlock *tb_find_slow(CPUArchState*, target_ulong,
                                       target_ulong, uint64_t);
+
+
+
 
 
 /* Data structure passed around by the translate handlers: */
@@ -105,14 +123,76 @@ struct afl_tsl {
  *************************/
 
 
+
+#define HASH_CONST          0xa5b35705
+
+#define ROL32(_x, _r)  ((((uint32_t)(_x)) << (_r)) | (((uint32_t)(_x)) >> (32 - (_r))))
+
+static inline uint32_t hash32(const uint32_t* key, uint32_t len, uint32_t seed) {
+
+  const uint32_t* data  = (uint32_t*)key;
+  uint32_t h1 = seed ^ len;
+
+  while (len--) {
+
+    uint32_t k1 = *data++;
+
+    k1 *= 0xcc9e2d51;
+    k1  = ROL32(k1, 15);
+    k1 *= 0x1b873593;
+
+    h1 ^= k1;
+    h1  = ROL32(h1, 13);
+    h1  = h1 * 5 + 0xe6546b64;
+
+  }
+
+  h1 ^= h1 >> 16;
+  h1 *= 0x85ebca6b;
+  h1 ^= h1 >> 13;
+  h1 *= 0xc2b2ae35;
+  h1 ^= h1 >> 16;
+
+  return h1;
+
+}
+
+
+
+
+
 /* Set up SHM region and initialize other stuff. */
 
 static void afl_setup(void) {
+  //fprintf(stderr, "[&]afl_setup\n");
+  char *id_str = getenv(SHM_ENV_VAR);
+  int shm_id = -1;
+  if(id_str)
+  {
+    shm_id = atoi(id_str);
+    cb_id = 0;
+  }
+  else
+  {
 
-  char *id_str = getenv(SHM_ENV_VAR),
-       *inst_r = getenv("AFL_INST_RATIO");
+    if ((read(FORKSRV_FD, &cb_id, 4) != 4) || (read(FORKSRV_FD, &shm_id, 4) != 4))
+      return;      
+  }
+  if(cb_id != -1)
+  {
+    cur_tsl_fd = TSL_FD - cb_id;
+  }else exit(1);
 
-  int shm_id;
+  if(shm_id != -1)
+  {
+    afl_area_ptr = shmat(shm_id, NULL, 0);
+
+    if (afl_area_ptr == (void*)-1) exit(1);
+
+  }else exit(1);
+
+
+  char *inst_r = getenv("AFL_INST_RATIO");
 
   if (inst_r) {
 
@@ -127,20 +207,7 @@ static void afl_setup(void) {
 
   }
 
-  if (id_str) {
 
-    shm_id = atoi(id_str);
-    afl_area_ptr = shmat(shm_id, NULL, 0);
-
-    if (afl_area_ptr == (void*)-1) exit(1);
-
-    /* With AFL_INST_RATIO set to a low value, we want to touch the bitmap
-       so that the parent doesn't give up on us. */
-
-    if (inst_r) afl_area_ptr[0] = 1;
-
-
-  }
 
   if (getenv("AFL_INST_LIBS")) {
 
@@ -148,77 +215,75 @@ static void afl_setup(void) {
     afl_end_code   = (abi_ulong)-1;
 
   }
-
+  //fprintf(stderr, "[&]afl_start_code: 0x%x | afl_end_code: 0x%x\n", afl_start_code, afl_end_code);
 }
 
 
 /* Fork server logic, invoked once we hit _start. */
 
 static void afl_forkserver(CPUArchState *env) {
-
+  // fprintf(stderr, "[$]afl_forkserver\n");
   static unsigned char tmp[4];
 
   if (!afl_area_ptr) return;
 
   /* Tell the parent that we're alive. If the parent doesn't want
      to talk, assume that we're not running in forkserver mode. */
-
   if (write(FORKSRV_FD + 1, tmp, 4) != 4) return;
-
-  afl_forksrv_pid = getpid();
 
   /* All right, let's await orders... */
 
-  while (1) {
+  // fprintf(stderr, "[%]#0\n");
 
+  while (1) {
     pid_t child_pid;
     int status, t_fd[2];
 
+    // fprintf(stderr, "--BEGIN--\n");
+
     /* Whoops, parent dead? */
 
-    if (read(FORKSRV_FD, tmp, 4) != 4) exit(2);
-
+    if (read(FORKSRV_FD, tmp, 4) != 4) exit(2); //forked exec start to run  tag 1
+    // fprintf(stderr, "[$]#1\n");
     /* Establish a channel with child to grab translation commands. We'll 
        read from t_fd[0], child will write to TSL_FD. */
 
-    if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) exit(3);
+    // if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) exit(3);
+    if (pipe(t_fd) || dup2(t_fd[1], cur_tsl_fd) < 0) exit(3);
     close(t_fd[1]);
-
     child_pid = fork();
     if (child_pid < 0) exit(4);
-
     if (!child_pid) {
-
       /* Child process. Close descriptors and run free. */
-
       afl_fork_child = 1;
       close(FORKSRV_FD);
       close(FORKSRV_FD + 1);
       close(t_fd[0]);
       return;
-
     }
 
     /* Parent. */
 
-    close(TSL_FD);
-
-    if (write(FORKSRV_FD + 1, &child_pid, 4) != 4) exit(5);
-
+    // close(TSL_FD);
+    close(cur_tsl_fd);
+    // fprintf(stderr, "[$]#4\n");
+    if (write(FORKSRV_FD + 1, &child_pid, 4) != 4) exit(5);       //tag 2
+    // fprintf(stderr, "[$]#5\n");
     /* Collect translation requests until child dies and closes the pipe. */
-
     afl_wait_tsl(env, t_fd[0]);
-
+    // fprintf(stderr, "[$]#6\n");
     /* Get and relay exit status to parent. */
-
-    if (waitpid(child_pid, &status, 0) < 0) exit(6);
-    if (write(FORKSRV_FD + 1, &status, 4) != 4) exit(7);
+    if (waitpid(child_pid, &status, WUNTRACED) < 0)
+    { 
+      exit(6);
+    }
+    // read_file_set_map();
+    // fprintf(stderr, "[$]#7\n");
+    if (write(FORKSRV_FD + 1, &status, 4) != 4) exit(7);        //tag 3
 
   }
 
 }
-
-
 
 
 
@@ -229,20 +294,19 @@ static void afl_forkserver(CPUArchState *env) {
 
 void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
 
-  // static abi_ulong prev_loc;
+//  /* Optimize for cur_loc > afl_end_code, which is the most likely case on
+//     Linux systems. */
+//
   static abi_ulong n_pair[N_GRAM];
-  /* Optimize for cur_loc > afl_end_code, which is the most likely case on
-     Linux systems. */
 
-  if (((cur_loc > afl_end_code || cur_loc < afl_start_code) && (next_pc > afl_end_code || next_pc < afl_start_code)) || !afl_area_ptr)
+  if ((cur_loc > afl_end_code || cur_loc < afl_start_code) && (next_pc > afl_end_code || next_pc < afl_start_code))
     return;
 
-  /* Looks like QEMU always maps to fixed locations, so we can skip this:
-     cur_loc -= afl_start_code; */
-
-  /* Instruction addresses may be aligned. Let's mangle the value to get
-     something quasi-uniform. */
-
+//  /* Looks like QEMU always maps to fixed locations, so we can skip this:
+//     cur_loc -= afl_start_code; */
+//
+//  /* Instruction addresses may be aligned. Let's mangle the value to get
+//     something quasi-uniform. */
 
   cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
   cur_loc &= MAP_SIZE - 1;
@@ -251,35 +315,29 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
   next_pc &= MAP_SIZE - 1;
 
 
-  /* Implement probabilistic instrumentation by looking at scrambled block
-     address. This keeps the instrumented locations stable across runs. */
 
+//  /* Implement probabilistic instrumentation by looking at scrambled block
+//     address. This keeps the instrumented locations stable across runs. */
+//
   if (cur_loc >= afl_inst_rms || next_pc >= afl_inst_rms) return;
+//
 
   abi_ulong cur = (cur_loc >> 1) ^ next_pc;
-
   abi_ulong acc = cur;
-  
-  // fprintf(stderr, "cur_loc: %d\n", cur_loc);
-  // fprintf(stderr, "n_branch[%d]: %d\n", 0, n_branch[0]);
+
   int i;
-  for(i=0;i<N_GRAM-1;i++)
+  for(i = 0; i<N_GRAM-1; i++)
   {
-    // fprintf(stderr, "n_branch[%d]: %d\n", i+1, n_branch[i+1]);
     acc ^= n_pair[i+1];
     n_pair[i] = n_pair[i+1];
   }
 
-  // fprintf(stderr, "acc: %d\n", acc);
   if(afl_area_ptr && afl_area_ptr[acc] < 255)
   {
     afl_area_ptr[acc] ++;
   }
 
   n_pair[N_GRAM-1] = cur;
-  // afl_area_ptr[cur_loc ^ prev_loc]++;
-  // prev_loc = cur_loc >> 1;
-
 }
 
 
@@ -291,16 +349,17 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
 static void afl_request_tsl(target_ulong pc, target_ulong cb, uint64_t flags) {
 
   struct afl_tsl t;
-
+  // fprintf(stderr, "[#]afl_request_tsl(pc=0x%x, cb=0x%x, )\n", pc, cb);
   if (!afl_fork_child) return;
-
+  // fprintf(stderr, "[#]fork_child\n");
   t.pc      = pc;
   t.cs_base = cb;
   t.flags   = flags;
-
-  if (write(TSL_FD, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl))
+  // fprintf(stderr, "[#]->write(cur_tsl_fd=%d,,)\n", cur_tsl_fd);
+  // if (write(TSL_FD, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl))
+  if (write(cur_tsl_fd, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl))
     return;
-
+  // fprintf(stderr, "[#]end-\n");
 }
 
 
@@ -310,22 +369,23 @@ static void afl_request_tsl(target_ulong pc, target_ulong cb, uint64_t flags) {
 static void afl_wait_tsl(CPUArchState *env, int fd) {
 
   struct afl_tsl t;
-
+  // fprintf(stderr, "[*]afl_wait_tsl()\n");
   while (1) {
-
+    // fprintf(stderr, "[*]while starts\n");
     /* Broken pipe means it's time to return to the fork server routine. */
 
     if (read(fd, &t, sizeof(struct afl_tsl)) != sizeof(struct afl_tsl))
       break;
-
+    // fprintf(stderr, "[*]t.pc: 0x%x | t.cs_base: 0x%x\n", t.pc, t.cs_base);
     //do not cache for dynamically generated code
-    // if((t.pc >= afl_start_code) && (t.pc <= afl_end_code))
-    // fprintf(stderr, "[*][0x%x, 0x%x] 0x%x\n", afl_start_code, afl_end_code, t.pc);
-    tb_find_slow(env, t.pc, t.cs_base, t.flags);
-
+    if((t.pc >= afl_start_code) && (t.pc <= afl_end_code))
+      tb_find_slow(env, t.pc, t.cs_base, t.flags);
+    // else
+      // fprintf(stderr, "[*]no cache for JIT code\n");
+    // fprintf(stderr, "[*]while ends--\n");
   }
-
   close(fd);
-
+  // fprintf(stderr, "[*]ret\n");
 }
+
 

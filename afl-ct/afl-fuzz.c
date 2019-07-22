@@ -65,7 +65,8 @@
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
-// static char* stat_vector[20];
+static int num_of_cbs = 0;
+static char* stat_vector[20];
 
 #define FUZ_SRC 0
 #define DRL_SRC 1
@@ -81,8 +82,8 @@ int sync_count = 0;
 static u8 *in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
           *out_dir,                   /* Working & output directory       */
-          *local_out_dir,
-          // *remote_out_dir,
+          // *local_out_dir,
+          *remote_out_dir,
           *sync_dir,                  /* Synchronization directory        */
           *sync_id,                   /* Fuzzer ID                        */
           *use_banner,                /* Display banner                   */
@@ -122,24 +123,36 @@ static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd,            /* Persistent fd for /dev/urandom   */
            dev_null_fd;               /* Persistent fd for /dev/null      */
 
-static s32 qemu_log_fd;                    /*Persistent fd for /tmp/afl_log*/
+static s32* qemu_log_fds;                    /*Persistent fd for /tmp/afl_log*/
 
-static s32 fsrv_ctl_fd,               /* Fork server control pipe (write) */
-           fsrv_st_fd;                /* Fork server status pipe (read)   */
+           // fsrv_ctl_fd,               /* Fork server control pipe (write) */
+           // fsrv_st_fd;                /* Fork server status pipe (read)   */
+static s32 *fsrv_ctl_fd,
+           *fsrv_st_fd;
 
 
-static s32 forksrv_pid,               /* PID of the fork server           */
-           child_pid = -1;            /* PID of the fuzzed program        */
+// static s32 forksrv_pid,               /* PID of the fork server           */
+           // child_pid = -1;            /* PID of the fuzzed program        */
+
+static s32* forksrv_pid = NULL;
+static s32* child_pid = NULL;
+
+static int* cbs_comm_fds = NULL;
 
 static int is_qemu_log = 0;
 
-static u8* trace_bits;                /* SHM with instrumentation bitmap  */
+// static u8* trace_bits;                /* SHM with instrumentation bitmap  */
+static u8** trace_bits;
 
-static u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
-           virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
-           virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
+// static u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
+//            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
+//            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
+static u8** virgin_bits;
+static u8** virgin_hang;
+static u8** virgin_crash;
 
-static s32 shm_id;                    /* ID of the SHM region             */
+// static s32 shm_id;                    /* ID of the SHM region             */
+static s32* shm_id;
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -168,7 +181,7 @@ static u64 total_crashes,             /* Total number of crashes          */
            total_execs,               /* Total execve() calls             */
            start_time,                /* Unix start time (ms)             */
            last_path_time,            /* Time for most recent path (ms)   */
-           first_crash_time = 0,      /* Time for first crash (ms)                    */
+           first_crash_time = 0,      /* Add for cgc                      */
            last_crash_time = 0,       /* Time for most recent crash (ms)  */
            last_hang_time,            /* Time for most recent hang (ms)   */
            queue_cycle,               /* Queue round counter              */
@@ -246,9 +259,9 @@ static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_top;//, /* Top of the list                  */
                           //*q_prev100; /* Previous 100 marker              */
 
-static struct queue_entry*
-  top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
-// static struct queue_entry** top_rated;
+// static struct queue_entry*
+//   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
+static struct queue_entry** top_rated;
 
 struct extra_data {
   u8* data;                           /* Dictionary token data            */
@@ -768,13 +781,22 @@ static void write_bitmap(void) {
   if (!bitmap_changed) return;
   bitmap_changed = 0;
 
-  // fname = alloc_printf("%s/fuzz_bitmap", out_dir);
-  fname = alloc_printf("%s/fuzz_bitmap", local_out_dir);
+  fname = alloc_printf("%s/fuzz_bitmap", out_dir);
+  // fname = alloc_printf("%s/fuzz_bitmap", local_out_dir);
   fd = open(fname, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
   if (fd < 0) PFATAL("Unable to open '%s'", fname);
 
-  ck_write(fd, virgin_bits, MAP_SIZE, fname);
+  u8* virgin_bits_one = ck_alloc(sizeof(u8) * MAP_SIZE * num_of_cbs);
+  int cb_id;
+  for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+  {
+    u8* ptr = virgin_bits_one + MAP_SIZE * cb_id;
+    memcpy(ptr, virgin_bits[cb_id], MAP_SIZE);
+  }
+  ck_write(fd, virgin_bits_one, MAP_SIZE * num_of_cbs, fname);
+
+  ck_free(virgin_bits_one);
   close(fd);
   ck_free(fname);
 
@@ -785,12 +807,20 @@ static void write_bitmap(void) {
 
 static void read_bitmap(u8* fname) {
 
+  u8* virgin_bits_one = ck_alloc(sizeof(u8) * MAP_SIZE * num_of_cbs);
   s32 fd = open(fname, O_RDONLY);
 
   if (fd < 0) PFATAL("Unable to open '%s'", fname);
 
-  ck_read(fd, virgin_bits, MAP_SIZE, fname);
+  ck_read(fd, virgin_bits_one, MAP_SIZE * num_of_cbs, fname);
 
+  int cb_id;
+  for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+  {
+    u8* ptr = virgin_bits_one + MAP_SIZE * cb_id;
+    memcpy(virgin_bits[cb_id], ptr, MAP_SIZE);
+  }
+  ck_free(virgin_bits_one);
   close(fd);
 
 }
@@ -807,81 +837,86 @@ static void read_bitmap(u8* fname) {
 #define FFL(_b) (0xffULL << ((_b) << 3))
 #define FF(_b)  (0xff << ((_b) << 3))
 
-static inline u8 has_new_bits(u8* virgin_map) {
+static inline u8 has_new_bits(u8** virgin_map) {
+  int cb_id;
+  u8 ret = 0;
+  for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+  {
 
 #ifdef __x86_64__
 
-  u64* current = (u64*)trace_bits;
-  u64* virgin  = (u64*)virgin_map;
+    u64* current = (u64*)trace_bits[cb_id];
+    u64* virgin  = (u64*)virgin_map[cb_id];
 
-  u32  i = (MAP_SIZE >> 3);
+    u32  i = (MAP_SIZE >> 3);
 
 #else
 
-  u32* current = (u32*)trace_bits;
-  u32* virgin  = (u32*)virgin_map;
+    u32* current = (u32*)trace_bits[cb_id];
+    u32* virgin  = (u32*)virgin_map[cb_id];
 
-  u32  i = (MAP_SIZE >> 2);
+    u32  i = (MAP_SIZE >> 2);
 
 #endif /* ^__x86_64__ */
 
-  u8   ret = 0;
+    // u8   ret = 0;
 
-  while (i--) {
+    while (i--) {
 
 #ifdef __x86_64__
 
-    u64 cur = *current;
-    u64 vir = *virgin;
+      u64 cur = *current;
+      u64 vir = *virgin;
 
 #else
 
-    u32 cur = *current;
-    u32 vir = *virgin;
+      u32 cur = *current;
+      u32 vir = *virgin;
 
 #endif /* ^__x86_64__ */
 
-    /* Optimize for *current == ~*virgin, since this will almost always be the
-       case. */
+      /* Optimize for *current == ~*virgin, since this will almost always be the
+         case. */
 
-    if (cur & vir) {
+      if (cur & vir) {
 
-      if (ret < 2) {
+        if (ret < 2) {
 
-        /* This trace did not have any new bytes yet; see if there's any
-           current[] byte that is non-zero when virgin[] is 0xff. */
+          /* This trace did not have any new bytes yet; see if there's any
+             current[] byte that is non-zero when virgin[] is 0xff. */
 
 #ifdef __x86_64__
 
-        if (((cur & FFL(0)) && (vir & FFL(0)) == FFL(0)) ||
-            ((cur & FFL(1)) && (vir & FFL(1)) == FFL(1)) ||
-            ((cur & FFL(2)) && (vir & FFL(2)) == FFL(2)) ||
-            ((cur & FFL(3)) && (vir & FFL(3)) == FFL(3)) ||
-            ((cur & FFL(4)) && (vir & FFL(4)) == FFL(4)) ||
-            ((cur & FFL(5)) && (vir & FFL(5)) == FFL(5)) ||
-            ((cur & FFL(6)) && (vir & FFL(6)) == FFL(6)) ||
-            ((cur & FFL(7)) && (vir & FFL(7)) == FFL(7))) ret = 2;
-        else ret = 1;
+          if (((cur & FFL(0)) && (vir & FFL(0)) == FFL(0)) ||
+              ((cur & FFL(1)) && (vir & FFL(1)) == FFL(1)) ||
+              ((cur & FFL(2)) && (vir & FFL(2)) == FFL(2)) ||
+              ((cur & FFL(3)) && (vir & FFL(3)) == FFL(3)) ||
+              ((cur & FFL(4)) && (vir & FFL(4)) == FFL(4)) ||
+              ((cur & FFL(5)) && (vir & FFL(5)) == FFL(5)) ||
+              ((cur & FFL(6)) && (vir & FFL(6)) == FFL(6)) ||
+              ((cur & FFL(7)) && (vir & FFL(7)) == FFL(7))) ret = 2;
+          else ret = 1;
 
 #else
 
-        if (((cur & FF(0)) && (vir & FF(0)) == FF(0)) ||
-            ((cur & FF(1)) && (vir & FF(1)) == FF(1)) ||
-            ((cur & FF(2)) && (vir & FF(2)) == FF(2)) ||
-            ((cur & FF(3)) && (vir & FF(3)) == FF(3))) ret = 2;
-        else ret = 1;
+          if (((cur & FF(0)) && (vir & FF(0)) == FF(0)) ||
+              ((cur & FF(1)) && (vir & FF(1)) == FF(1)) ||
+              ((cur & FF(2)) && (vir & FF(2)) == FF(2)) ||
+              ((cur & FF(3)) && (vir & FF(3)) == FF(3))) ret = 2;
+          else ret = 1;
 
 #endif /* ^__x86_64__ */
+
+        }
+
+        *virgin = vir & ~cur;
 
       }
 
-      *virgin = vir & ~cur;
+      current++;
+      virgin++;
 
     }
-
-    current++;
-    virgin++;
-
   }
 
   if (ret && virgin_map == virgin_bits) bitmap_changed = 1;
@@ -890,33 +925,38 @@ static inline u8 has_new_bits(u8* virgin_map) {
 
 }
 
+
 /* Count the number of bits set in the provided bitmap. Used for the status
    screen several times every second, does not have to be fast. */
 
-static u32 count_bits(u8* mem) {
+static u32 count_bits(u8** mem) {
 
-  u32* ptr = (u32*)mem;
-  u32  i   = (MAP_SIZE >> 2);
-  u32  ret = 0;
+  int cb_id;
+  u32 ret = 0;
+  for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+  {
+    u32* ptr = (u32*)(mem[cb_id]);
+    u32  i   = (MAP_SIZE >> 2);
+    // u32  ret = 0;
 
-  while (i--) {
+    while (i--) {
 
-    u32 v = *(ptr++);
+      u32 v = *(ptr++);
 
-    /* This gets called on the inverse, virgin bitmap; optimize for sparse
-       data. */
+      /* This gets called on the inverse, virgin bitmap; optimize for sparse
+         data. */
 
-    if (v == 0xffffffff) {
-      ret += 32;
-      continue;
+      if (v == 0xffffffff) {
+        ret += 32;
+        continue;
+      }
+
+      v -= ((v >> 1) & 0x55555555);
+      v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+      ret += (((v + (v >> 4)) & 0xF0F0F0F) * 0x01010101) >> 24;
+
     }
-
-    v -= ((v >> 1) & 0x55555555);
-    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
-    ret += (((v + (v >> 4)) & 0xF0F0F0F) * 0x01010101) >> 24;
-
   }
-
   return ret;
 
 }
@@ -926,22 +966,27 @@ static u32 count_bits(u8* mem) {
    mostly to update the status screen or calibrate and examine confirmed
    new paths. */
 
-static u32 count_bytes(u8* mem) {
+static u32 count_bytes(u8** mem) {
 
-  u32* ptr = (u32*)mem;
-  u32  i   = (MAP_SIZE >> 2);
-  u32  ret = 0;
+  int j;
+  u32 ret = 0;
+  for(j=0; j<num_of_cbs; j++)
+  {
+    u32* ptr = (u32*)(mem[j]);
+    u32  i   = (MAP_SIZE >> 2);
+    // u32  ret = 0;
 
-  while (i--) {
+    while (i--) {
 
-    u32 v = *(ptr++);
+      u32 v = *(ptr++);
 
-    if (!v) continue;
-    if (v & FF(0)) ret++;
-    if (v & FF(1)) ret++;
-    if (v & FF(2)) ret++;
-    if (v & FF(3)) ret++;
+      if (!v) continue;
+      if (v & FF(0)) ret++;
+      if (v & FF(1)) ret++;
+      if (v & FF(2)) ret++;
+      if (v & FF(3)) ret++;
 
+    }
   }
 
   return ret;
@@ -952,30 +997,36 @@ static u32 count_bytes(u8* mem) {
 /* Count the number of non-255 bytes set in the bitmap. Used strictly for the
    status screen, several calls per second or so. */
 
-static u32 count_non_255_bytes(u8* mem) {
+static u32 count_non_255_bytes(u8** mem) {
 
-  u32* ptr = (u32*)mem;
-  u32  i   = (MAP_SIZE >> 2);
-  u32  ret = 0;
+  int j;
+  u32 ret = 0;
+  for(j=0; j<num_of_cbs; j++)
+  {
+    u32* ptr = (u32*)(mem[j]);
+    u32  i   = (MAP_SIZE >> 2);
+    // u32  ret = 0;
 
-  while (i--) {
+    while (i--) {
 
-    u32 v = *(ptr++);
+      u32 v = *(ptr++);
 
-    /* This is called on the virgin bitmap, so optimize for the most likely
-       case. */
+      /* This is called on the virgin bitmap, so optimize for the most likely
+         case. */
 
-    if (v == 0xffffffff) continue;
-    if ((v & FF(0)) != FF(0)) ret++;
-    if ((v & FF(1)) != FF(1)) ret++;
-    if ((v & FF(2)) != FF(2)) ret++;
-    if ((v & FF(3)) != FF(3)) ret++;
+      if (v == 0xffffffff) continue;
+      if ((v & FF(0)) != FF(0)) ret++;
+      if ((v & FF(1)) != FF(1)) ret++;
+      if ((v & FF(2)) != FF(2)) ret++;
+      if ((v & FF(3)) != FF(3)) ret++;
 
+    }
   }
 
   return ret;
 
 }
+
 
 /* Destructively simplify trace by eliminating hit count information
    and replacing it with 0x80 or 0x01 depending on whether the tuple
@@ -1001,57 +1052,68 @@ static u8 simplify_lookup[256] = {
 
 #ifdef __x86_64__
 
-static void simplify_trace(u64* mem) {
+static void simplify_trace(u64** mem_array) {
 
-  u32 i = MAP_SIZE >> 3;
+  int j;
+  u64* mem;
+  for(j=0; j<num_of_cbs; j++)
+  {
+    u32 i = MAP_SIZE >> 3;
+    mem = mem_array[j];
+    while (i--) {
 
-  while (i--) {
+      /* Optimize for sparse bitmaps. */
 
-    /* Optimize for sparse bitmaps. */
+      if (*mem) {
 
-    if (*mem) {
+        u8* mem8 = (u8*)mem;
 
-      u8* mem8 = (u8*)mem;
+        mem8[0] = simplify_lookup[mem8[0]];
+        mem8[1] = simplify_lookup[mem8[1]];
+        mem8[2] = simplify_lookup[mem8[2]];
+        mem8[3] = simplify_lookup[mem8[3]];
+        mem8[4] = simplify_lookup[mem8[4]];
+        mem8[5] = simplify_lookup[mem8[5]];
+        mem8[6] = simplify_lookup[mem8[6]];
+        mem8[7] = simplify_lookup[mem8[7]];
 
-      mem8[0] = simplify_lookup[mem8[0]];
-      mem8[1] = simplify_lookup[mem8[1]];
-      mem8[2] = simplify_lookup[mem8[2]];
-      mem8[3] = simplify_lookup[mem8[3]];
-      mem8[4] = simplify_lookup[mem8[4]];
-      mem8[5] = simplify_lookup[mem8[5]];
-      mem8[6] = simplify_lookup[mem8[6]];
-      mem8[7] = simplify_lookup[mem8[7]];
+      } else *mem = 0x0101010101010101ULL;
 
-    } else *mem = 0x0101010101010101ULL;
+      mem++;
 
-    mem++;
-
+    }
   }
 
 }
 
 #else
 
-static void simplify_trace(u32* mem) {
+static void simplify_trace(u32** mem_array) {
 
-  u32 i = MAP_SIZE >> 2;
+  int j;
+  u32* mem;
 
-  while (i--) {
+  for(j=0; j<num_of_cbs; j++)
+  {
+    u32 i = MAP_SIZE >> 2;
+    mem = mem_array[j];
+    while (i--) {
 
-    /* Optimize for sparse bitmaps. */
+      /* Optimize for sparse bitmaps. */
 
-    if (*mem) {
+      if (*mem) {
 
-      u8* mem8 = (u8*)mem;
+        u8* mem8 = (u8*)mem;
 
-      mem8[0] = simplify_lookup[mem8[0]];
-      mem8[1] = simplify_lookup[mem8[1]];
-      mem8[2] = simplify_lookup[mem8[2]];
-      mem8[3] = simplify_lookup[mem8[3]];
+        mem8[0] = simplify_lookup[mem8[0]];
+        mem8[1] = simplify_lookup[mem8[1]];
+        mem8[2] = simplify_lookup[mem8[2]];
+        mem8[3] = simplify_lookup[mem8[3]];
 
-    } else *mem = 0x01010101;
+      } else *mem = 0x01010101;
 
-    mem++;
+      mem++;
+    }
   }
 
 }
@@ -1076,58 +1138,67 @@ static u8 count_class_lookup[256] = {
 
 #ifdef __x86_64__
 
-static inline void classify_counts(u64* mem) {
+static inline void classify_counts(u64** mem_array) {
 
-  u32 i = MAP_SIZE >> 3;
+  int j;
+  for(j=0; j<num_of_cbs; j++)
+  {
+    u32 i = MAP_SIZE >> 3;
+    u64* mem = mem_array[j];
 
-  while (i--) {
+    while (i--) {
 
-    /* Optimize for sparse bitmaps. */
+      /* Optimize for sparse bitmaps. */
 
-    if (*mem) {
+      if (*mem) {
 
-      u8* mem8 = (u8*)mem;
+        u8* mem8 = (u8*)mem;
 
-      mem8[0] = count_class_lookup[mem8[0]];
-      mem8[1] = count_class_lookup[mem8[1]];
-      mem8[2] = count_class_lookup[mem8[2]];
-      mem8[3] = count_class_lookup[mem8[3]];
-      mem8[4] = count_class_lookup[mem8[4]];
-      mem8[5] = count_class_lookup[mem8[5]];
-      mem8[6] = count_class_lookup[mem8[6]];
-      mem8[7] = count_class_lookup[mem8[7]];
+        mem8[0] = count_class_lookup[mem8[0]];
+        mem8[1] = count_class_lookup[mem8[1]];
+        mem8[2] = count_class_lookup[mem8[2]];
+        mem8[3] = count_class_lookup[mem8[3]];
+        mem8[4] = count_class_lookup[mem8[4]];
+        mem8[5] = count_class_lookup[mem8[5]];
+        mem8[6] = count_class_lookup[mem8[6]];
+        mem8[7] = count_class_lookup[mem8[7]];
+
+      }
+
+      mem++;
 
     }
-
-    mem++;
-
   }
 
 }
 
 #else
 
-static inline void classify_counts(u32* mem) {
+static inline void classify_counts(u32** mem_array) {
 
-  u32 i = MAP_SIZE >> 2;
+  int j;
+  for(j=0; j<num_of_cbs; j++)
+  {
+    u32 i = MAP_SIZE >> 2;
+    u32* mem = mem_array[j];
+    while (i--) {
 
-  while (i--) {
+      /* Optimize for sparse bitmaps. */
 
-    /* Optimize for sparse bitmaps. */
+      if (*mem) {
 
-    if (*mem) {
+        u8* mem8 = (u8*)mem;
 
-      u8* mem8 = (u8*)mem;
+        mem8[0] = count_class_lookup[mem8[0]];
+        mem8[1] = count_class_lookup[mem8[1]];
+        mem8[2] = count_class_lookup[mem8[2]];
+        mem8[3] = count_class_lookup[mem8[3]];
 
-      mem8[0] = count_class_lookup[mem8[0]];
-      mem8[1] = count_class_lookup[mem8[1]];
-      mem8[2] = count_class_lookup[mem8[2]];
-      mem8[3] = count_class_lookup[mem8[3]];
+      }
+
+      mem++;
 
     }
-
-    mem++;
-
   }
 
 }
@@ -1138,28 +1209,35 @@ static inline void classify_counts(u32* mem) {
 /* Get rid of shared memory (atexit handler). */
 
 static void remove_shm(void) {
-
-  shmctl(shm_id, IPC_RMID, NULL);
+  int i;
+  for(i=0; i<num_of_cbs; i++)
+  {
+    if(shm_id[i] != -1)
+      shmctl(shm_id[i], IPC_RMID, NULL);
+  }
 
 }
-
 
 
 /* Compact trace bytes into a smaller bitmap. We effectively just drop the
    count information here. This is called only sporadically, for some
    new paths. */
 
-static void minimize_bits(u8* dst, u8* src) {
+static void minimize_bits(u8* dst, u8** src_array) {
 
-  u32 i = 0;
-
-  while (i < MAP_SIZE) {
-
-    if (*(src++)) dst[i >> 3] |= 1 << (i & 7);
-    i++;
-
+  int j;
+  u8* dst_p;
+  u8* src;
+  for(j=0; j<num_of_cbs; j++)
+  {
+    dst_p = dst + (MAP_SIZE >> 3) * j;
+    src = src_array[j];
+    u32 i = 0;
+    while (i < MAP_SIZE) {
+      if (*(src++)) dst_p[i >> 3] |= 1 << (i & 7);
+      i++;
+    }
   }
-
 }
 
 
@@ -1174,16 +1252,26 @@ static void minimize_bits(u8* dst, u8* src) {
    contender, or if the contender has a more favorable speed x size factor. */
 
 static void update_bitmap_score(struct queue_entry* q) {
+
   u32 i;
   u32 fuzz_level = q->fuzz_level;
-  u32 paths = getPaths(q->exec_cksum);
+  u32 paths = getPaths(q->exec_cksum);  
   u64 fav_factor = q->exec_us * q->len;
-  
-  for (i = 0; i < MAP_SIZE; i++)
 
-    if (trace_bits[i]) {
+  /* For every byte set in trace_bits[], see if there is a previous winner,
+     and how it compares to us. */
+  int cb_id; 
+  for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+  {
+    u32 start = 0 + cb_id * MAP_SIZE;
+    u32 end = MAP_SIZE + cb_id * MAP_SIZE;
+    for (i = start; i < end; i++)
+    {  
+      if (trace_bits[cb_id][i - start]) {
+        if (top_rated[i]) {
 
-       if (top_rated[i]) {
+          /* Faster-executing or smaller test cases are favored. */
+         // if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
          u32 top_rated_fuzz_level = top_rated[i]->fuzz_level;
          u32 top_rated_paths = getPaths(top_rated[i]->exec_cksum);
          u64 top_rated_fav_factor = top_rated[i]->exec_us * top_rated[i]->len;
@@ -1196,30 +1284,30 @@ static void update_bitmap_score(struct queue_entry* q) {
            }
          }
          //if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len ) continue;
-         
-         /* Looks like we're going to win. Decrease ref count for the
-            previous winner, discard its trace_bits[] if necessary. */
+   
+          /* Looks like we're going to win. Decrease ref count for the
+          previous winner, discard its trace_bits[] if necessary. */
 
-         if (!--top_rated[i]->tc_ref) {
-           ck_free(top_rated[i]->trace_mini);
-           top_rated[i]->trace_mini = 0;
-         }
+          if (!--top_rated[i]->tc_ref) {
+            ck_free(top_rated[i]->trace_mini);
+            top_rated[i]->trace_mini = 0;
+          }
 
-       }
+        }
+        /* Insert ourselves as the new winner. */
 
-       /* Insert ourselves as the new winner. */
+        top_rated[i] = q;
+        q->tc_ref++;
 
-       top_rated[i] = q;
-       q->tc_ref++;
+        if (!q->trace_mini) {
+          q->trace_mini = ck_alloc((num_of_cbs * MAP_SIZE) >> 3);
+          minimize_bits(q->trace_mini, trace_bits);
+        }
+        score_changed = 1;
 
-       if (!q->trace_mini) {
-         q->trace_mini = ck_alloc(MAP_SIZE >> 3);
-         minimize_bits(q->trace_mini, trace_bits);
-       }
-
-       score_changed = 1;
-
-     }
+      }
+    }
+  }
 
 }
 
@@ -1233,14 +1321,18 @@ static void update_bitmap_score(struct queue_entry* q) {
 static void cull_queue(void) {
 
   struct queue_entry* q;
-  static u8 temp_v[MAP_SIZE >> 3];
+  // static u8 temp_v[MAP_SIZE >> 3];
+  static u8* temp_v = NULL;
+  if(!temp_v)
+    temp_v = ck_alloc((MAP_SIZE * num_of_cbs) >> 3);
+
   u32 i;
 
   if (dumb_mode || !score_changed) return;
 
   score_changed = 0;
 
-  memset(temp_v, 255, MAP_SIZE >> 3);
+  memset(temp_v, 255, (MAP_SIZE * num_of_cbs) >> 3);
 
   queued_favored  = 0;
   pending_favored = 0;
@@ -1256,10 +1348,11 @@ static void cull_queue(void) {
   /* Let's see if anything in the bitmap isn't captured in temp_v.
      If yes, and if it has a top_rated[] contender, let's use it. */
 
-  for (i = 0; i < MAP_SIZE; i++)
+  for (i = 0; i < MAP_SIZE * num_of_cbs; i++)
+  {
     if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
 
-      u32 j = MAP_SIZE >> 3;
+      u32 j = (MAP_SIZE * num_of_cbs) >> 3;
 
       /* Remove all bits belonging to the current entry from temp_v. */
 
@@ -1270,16 +1363,19 @@ static void cull_queue(void) {
       top_rated[i]->favored = 1;
       queued_favored++;
 
-      //if (!top_rated[i]->was_fuzzed) pending_favored++;
+      // if (!top_rated[i]->was_fuzzed) pending_favored++;
       if (!top_rated[i]->fuzz_level == 0) pending_favored++;
-    }
 
-  //q = queue;
-  //
-  //while (q) {
-  //  mark_as_redundant(q, !q->favored);
-  //  q = q->next;
-  //}
+    }
+  }
+  // ck_free(temp_v);
+
+  // q = queue;
+
+  // while (q) {
+  //   mark_as_redundant(q, !q->favored);
+  //   q = q->next;
+  // }
 
 }
 
@@ -1288,48 +1384,65 @@ static void cull_queue(void) {
 
 static void setup_shm(void) {
 
-  u8* shm_str;
+  shm_id = (s32*)ck_alloc(sizeof(s32) * num_of_cbs);
+  virgin_bits = (u8**)ck_alloc(sizeof(u8*) * num_of_cbs);
+  virgin_hang = (u8**)ck_alloc(sizeof(u8*) * num_of_cbs);
+  virgin_crash = (u8**)ck_alloc(sizeof(u8*) * num_of_cbs);
+  trace_bits = (u8**)ck_alloc(sizeof(u8*) * num_of_cbs);
 
-  if (!in_bitmap) memset(virgin_bits, 255, MAP_SIZE);
-
-  memset(virgin_hang, 255, MAP_SIZE);
-  memset(virgin_crash, 255, MAP_SIZE);
-
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
-
-  if (shm_id < 0) PFATAL("shmget() failed");
-
+  int i;
+  for(i=0; i<num_of_cbs; i++)
+    shm_id[i] = -1;
+  
   atexit(remove_shm);
 
-  shm_str = alloc_printf("%d", shm_id);
+  for(i=0; i<num_of_cbs; i++)
+  { 
 
-  /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
-     we don't want them to detect instrumentation, since we won't be sending
-     fork server commands. This should be replaced with better auto-detection
-     later on, perhaps? */
+    virgin_bits[i] = ck_alloc(MAP_SIZE);
+    virgin_hang[i] = ck_alloc(MAP_SIZE);
+    virgin_crash[i] = ck_alloc(MAP_SIZE);
 
-  if (dumb_mode != 1)
-    setenv(SHM_ENV_VAR, shm_str, 1);
+    if (!in_bitmap) memset(virgin_bits[i], 255, MAP_SIZE);
 
-  ck_free(shm_str);
+    memset(virgin_hang[i], 255, MAP_SIZE);
+    memset(virgin_crash[i], 255, MAP_SIZE);
 
-  trace_bits = shmat(shm_id, NULL, 0);
+    shm_id[i] = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+
+    if (shm_id[i] < 0) PFATAL("shmget() failed for %i", i);
+
+    trace_bits[i] = shmat(shm_id[i], NULL, 0);
   
-  if (!trace_bits) PFATAL("shmat() failed");
+    if (!trace_bits[i]) PFATAL("shmat() failed");
+  }
+  // u8* shm_str;
+  // shm_str = alloc_printf("%d", shm_id[i]);
 
-    ACTF("shm_id: %i", (int)shm_id);
+  //    If somebody is asking us to fuzz instrumented binaries in dumb mode,
+  //      we don't want them to detect instrumentation, since we won't be sending
+  //      fork server commands. This should be replaced with better auto-detection
+  //      later on, perhaps? 
+
+  // if (dumb_mode != 1)
+  //   setenv(SHM_ENV_VAR, shm_str, 1);
+
+  // ck_free(shm_str);
+  for(i=0; i< num_of_cbs; i++)
+  {
+    ACTF("shm_id[%i]: %i", i, (int)shm_id[i]);
 #ifdef __x86_64__
-    ACTF("trace_bits@ 0x%016lx", (unsigned long)trace_bits);
-    ACTF("virgin_bits@ 0x%016lx", (unsigned long)virgin_bits);
-    ACTF("virgin_hang@ 0x%016lx", (unsigned long)virgin_hang);
-    ACTF("virgin_crash@ 0x%016lx", (unsigned long)virgin_crash);
+    ACTF("trace_bits[%i] addr: 0x%016lx", i, (unsigned long)trace_bits[i]);
+    ACTF("virgin_bits[%i] addr: 0x%016lx", i, (unsigned long)virgin_bits[i]);
+    ACTF("virgin_hang[%i] addr: 0x%016lx", i, (unsigned long)virgin_hang[i]);
+    ACTF("virgin_crash[%i] addr: 0x%016lx", i, (unsigned long)virgin_crash[i]);
 #else
-    ACTF("trace_bits@ 0x%08x", (unsigned int)trace_bits);
-    ACTF("virgin_bits@ 0x%08x", (unsigned int)virgin_bits);
-    ACTF("virgin_hang@ 0x%08x", (unsigned int)virgin_hang);
-    ACTF("virgin_crash@ 0x%08x", (unsigned int)virgin_crash);
+    ACTF("trace_bits[%i] addr: 0x%08x", i, (unsigned int)trace_bits[i]);
+    ACTF("virgin_bits[%i] addr: 0x%08x", i, (unsigned int)virgin_bits[i]);
+    ACTF("virgin_hang[%i] addr: 0x%08x", i, (unsigned int)virgin_hang[i]);
+    ACTF("virgin_crash[%i] addr: 0x%08x", i, (unsigned int)virgin_crash[i]);
 #endif /* ^__x86_64__ */
-  
+  }
 }
 
 
@@ -1394,9 +1507,6 @@ static void read_testcases(void) {
 
     }
 
-    if (st.st_size > MAX_FILE) 
-      FATAL("Test case '%s' is too big (%s, limit is %s)", fn,
-            DMS(st.st_size), DMS(MAX_FILE));
 
     /* Check for metadata that indicates that deterministic fuzzing
        is complete for this entry. We don't want to repeat deterministic
@@ -1405,8 +1515,17 @@ static void read_testcases(void) {
 
     if (!access(dfn, F_OK)) passed_det = 1;
     ck_free(dfn);
-
-    add_to_queue(fn, st.st_size, passed_det);
+    
+    if (st.st_size > MAX_FILE) 
+    {
+      WARNF("Test case '%s' is too big (%s, limit is %s)", fn,
+            DMS(st.st_size), DMS(MAX_FILE));
+      ck_free(fn);
+    }
+    else
+    {
+      add_to_queue(fn, st.st_size, passed_det);
+    }
 
   }
 
@@ -1728,6 +1847,18 @@ static void destroy_extras(void) {
 
 }
 
+/*CGC now set up fds for communication between multiple CBs*/
+static void init_cbs_comm_fds()
+{
+  cbs_comm_fds = ck_alloc(sizeof(int) * num_of_cbs * 2);
+  int i;
+  for(i=0; i<num_of_cbs; i++)
+  {
+    if(0 != socketpair(AF_UNIX, SOCK_STREAM, 0, cbs_comm_fds + 2 * i))
+      PFATAL("Cannot create socket");
+  }
+}
+
 /* Spin up fork server (instrumented mode only). The idea is explained here:
 
    http://lcamtuf.blogspot.com/2014/10/fuzzing-binaries-without-execve.html
@@ -1739,325 +1870,51 @@ static void destroy_extras(void) {
 static void init_forkserver(char** argv) {
 
   static struct itimerval it;
-  int st_pipe[2], ctl_pipe[2];
+  // int st_pipe[2], ctl_pipe[2];
   int status;
   s32 rlen;
 
-  ACTF("Spinning up the fork server ");
+  forksrv_pid = ck_alloc(sizeof(s32) * num_of_cbs);
+  child_pid   = ck_alloc(sizeof(s32) * num_of_cbs);
+  fsrv_ctl_fd = ck_alloc(sizeof(s32) * num_of_cbs);
+  fsrv_st_fd  = ck_alloc(sizeof(s32) * num_of_cbs);
 
-  if (pipe(st_pipe) || pipe(ctl_pipe)) PFATAL("pipe() failed");
+  cbs_comm_fds = ck_alloc(sizeof(int) * (num_of_cbs - 1) * 2);
 
-  forksrv_pid = fork();
-
-  if (forksrv_pid < 0) PFATAL("fork() failed");
-
-  if (!forksrv_pid) {
-
-    struct rlimit r;
-
-    /* Umpf. On OpenBSD, the default fd limit for root users is set to
-      soft 128. Let's try to fix that... */
-
-    if (!getrlimit(RLIMIT_NOFILE, &r) && r.rlim_cur < FORKSRV_FD + 2) {
-
-      r.rlim_cur = FORKSRV_FD + 2;
-      setrlimit(RLIMIT_NOFILE, &r); /* Ignore errors */
-
-    }
-
-    if (mem_limit) {
-
-      r.rlim_max = r.rlim_cur = ((rlim_t)mem_limit) << 20;
-
-#ifdef RLIMIT_AS
-
-      setrlimit(RLIMIT_AS, &r); /* Ignore errors */
-
-#else
-
-      /* This takes care of OpenBSD, which doesn't have RLIMIT_AS, but
-         according to reliable sources, RLIMIT_DATA covers anonymous
-         maps - so we should be getting good protection against OOM bugs. */
-
-      setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
-
-#endif /* ^RLIMIT_AS */
-
-
-    }
-
-    /* Dumping cores is slow and can lead to anomalies if SIGKILL is delivered
-       before the dump is complete. */
-
-    r.rlim_max = r.rlim_cur = 0;
-
-    setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
-
-    /* Isolate the process and configure standard descriptors. If out_file is
-       specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
-
-    setsid();
-
-    dup2(dev_null_fd, 1);
-    
-    if(!is_qemu_log)
-      dup2(dev_null_fd, 2);
-    else
-      dup2(qemu_log_fd, 2);
-
-    if (out_file) {
-
-      dup2(dev_null_fd, 0);
-
-    } else {
-
-      dup2(out_fd, 0);
-      close(out_fd);
-
-    }
-
-    /* Set up control and status pipes, close the unneeded original fds. */
-
-    if (dup2(ctl_pipe[0], FORKSRV_FD ) < 0) PFATAL("dup2() failed");
-    if (dup2(st_pipe[1], FORKSRV_FD + 1) < 0) PFATAL("dup2() failed");
-
-    close(ctl_pipe[0]);
-    close(ctl_pipe[1]);
-    close(st_pipe[0]);
-    close(st_pipe[1]);
-
-    close(dev_null_fd);
-    close(dev_urandom_fd);
-    close(fileno(plot_file));
-    /* This should improve performance a bit, since it stops the linker from
-       doing extra work post-fork(). */
-
-    setenv("LD_BIND_NOW", "1", 0);
-
-    /* Set sane defaults for ASAN if nothing else specified. */
-
-    setenv("ASAN_OPTIONS", "abort_on_error=1:"
-                           "detect_leaks=0:"
-                           "allocator_may_return_null=1", 0);
-
-    /* MSAN is tricky, because it doesn't support abort_on_error=1 at this
-       point. So, we do this in a very hacky way. */
-
-    setenv("MSAN_OPTIONS", "exit_code=" STRINGIFY(MSAN_ERROR) ":"
-                           "msan_track_origins=0", 0);
-
-    execv(target_path, argv);
-
-    /* Use a distinctive bitmap signature to tell the parent about execv()
-       falling through. */
-
-    *(u32*)trace_bits = EXEC_FAIL_SIG;
-    exit(0);
-
+  int i;
+  for(i=0; i<num_of_cbs; i++)
+  {
+    forksrv_pid[i] = -1;
+    child_pid[i] = -1;
   }
 
-  /* Close the unneeded endpoints. */
 
-  close(ctl_pipe[0]);
-  close(st_pipe[1]);
+  for(i=0; i<num_of_cbs; i++)
+  {
+    child_timed_out = 0;
+    int st_pipe[2], ctl_pipe[2];
 
-  fsrv_ctl_fd = ctl_pipe[1];
-  fsrv_st_fd = st_pipe[0];
+    ACTF("Spinning up the fork server for cb_%02i...", i);
 
+    if (pipe(st_pipe) || pipe(ctl_pipe)) PFATAL("pipe() failed for cb_%02i", i);
 
-  // if(write(fsrv_ctl_fd[i], &i, 4) != 4)
-  // {
-  //   if (stop_soon) return ;
-  //   FATAL("Unable to send cb_id to the new fork server of CB %02i (OOM?)", i);
-  // }
+    forksrv_pid[i] = fork();
 
-  // if(write(fsrv_ctl_fd[i], shm_id + i, 4) != 4)
-  // {
-  //   if (stop_soon) return ;
-  //   FATAL("Unable to send shm_id to the new fork server of CB %02i (OOM?)", i);
-  // }
+    if (forksrv_pid[i] < 0) PFATAL("fork() failed for cb_%02i", i);
 
-  /* Wait for the fork server to come up, but don't wait too long. */
-
-  it.it_value.tv_sec = ((exec_tmout * FORK_WAIT_MULT) / 1000);
-  it.it_value.tv_usec = ((exec_tmout * FORK_WAIT_MULT) % 1000) * 1000;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  rlen = read(fsrv_st_fd, &status, 4);
-
-  it.it_value.tv_sec = 0;
-  it.it_value.tv_usec = 0;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  /* If we have a four-byte "hello" message from the server, we're all set.
-     Otherwise, try to figure out what went wrong. */
-
-  if (rlen == 4) {
-    OKF("All right - fork server is up.");
-    return;
-    // continue;
-  }
-
-  if (child_timed_out)
-    FATAL("Timeout while initializing fork server (adjusting -t may help)");
-
-  if (waitpid(forksrv_pid, &status, WUNTRACED) <= 0)
-    PFATAL("waitpid() failed");
-
-  if (WIFSIGNALED(status)) {
-
-    if (mem_limit && mem_limit < 500 && uses_asan) {
-
-      SAYF("\n" cLRD "[-] " cRST
-           "Whoops, the target binary crashed suddenly, before receiving any input\n"
-           "    from the fuzzer! Since it seems to be built with ASAN and you have a\n"
-           "    restrictive memory limit configured, this is expected; please read\n"
-           "    %s/notes_for_asan.txt for help.\n", doc_path);
-
-    } else if (!mem_limit) {
-
-      SAYF("\n" cLRD "[-] " cRST
-           "Whoops, the target binary crashed suddenly, before receiving any input\n"
-           "    from the fuzzer! There are several probable explanations:\n\n"
-
-           "    - The binary is just buggy and explodes entirely on its own. If so, you\n"
-           "      need to fix the underlying problem or find a better replacement.\n\n"
-
-#ifdef __APPLE__
-
-           "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
-           "      break afl-fuzz performance optimizations when running platform-specific\n"
-           "      targets. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
-
-#endif /* __APPLE__ */
-
-           "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
-           "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n");
-
-    } else {
-
-      SAYF("\n" cLRD "[-] " cRST
-           "Whoops, the target binary crashed suddenly, before receiving any input\n"
-           "    from the fuzzer! There are several probable explanations:\n\n"
-
-           "    - The current memory limit (%s) is too restrictive, causing the\n"
-           "      target to hit an OOM condition in the dynamic linker. Try bumping up\n"
-           "      the limit with the -m setting in the command line. A simple way confirm\n"
-           "      this diagnosis would be:\n\n"
-
-#ifdef RLIMIT_AS
-          "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
-#else
-          "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
-#endif /* ^RLIMIT_AS */
-
-           "      Tip: you can use ppvm (http://jwilk.net/software/ppvm) to quickly\n"
-           "      estimate the required amount of virtual memory for the binary.\n\n"
-
-           "    - The binary is just buggy and explodes entirely on its own. If so, you\n"
-           "      need to fix the underlying problem or find a better replacement.\n\n"
-
-#ifdef __APPLE__
-
-           "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
-           "      break afl-fuzz performance optimizations when running platform-specific\n"
-           "      targets. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
-
-#endif /* __APPLE__ */
-
-           "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
-           "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
-           DMS(mem_limit << 20), mem_limit - 1);
-
-    }
-
-    FATAL("Fork server crashed with signal %d", WTERMSIG(status));
-
-  }
-
-  if (*(u32*)trace_bits == EXEC_FAIL_SIG)
-    FATAL("Unable to execute target application ('%s')", argv[0]);
-
-  if (mem_limit && mem_limit < 500 && uses_asan) {
-
-    SAYF("\n" cLRD "[-] " cRST
-           "Hmm, looks like the target binary terminated before we could complete a\n"
-           "    handshake with the injected code. Since it seems to be built with ASAN and\n"
-           "    you have a restrictive memory limit configured, this is expected; please\n"
-           "    read %s/notes_for_asan.txt for help.\n", doc_path);
-
-  } else if (!mem_limit) {
-
-    SAYF("\n" cLRD "[-] " cRST
-         "Hmm, looks like the target binary terminated before we could complete a\n"
-         "    handshake with the injected code. Perhaps there is a horrible bug in the\n"
-         "    fuzzer. Poke <lcamtuf@coredump.cx> for troubleshooting tips.\n");
-
-  } else {
-
-    SAYF("\n" cLRD "[-] " cRST
-         "Hmm, looks like the target binary terminated before we could complete a\n"
-         "    handshake with the injected code. There are two probable explanations:\n\n"
-
-         "    - The current memory limit (%s) is too restrictive, causing an OOM\n"
-         "      fault in the dynamic linker. This can be fixed with the -m option. A\n"
-         "      simple way to confirm the diagnosis may be:\n\n"
-
-#ifdef RLIMIT_AS
-        "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
-#else
-        "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
-#endif /* ^RLIMIT_AS */
-
-        "      Tip: you can use ppvm (http://jwilk.net/software/ppvm) to quickly\n"
-        "      estimate the required amount of virtual memory for the binary.\n\n"
-
-        "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
-        "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
-        DMS(mem_limit << 20), mem_limit - 1);
-
-  }
-
-  FATAL("Fork server handshake failed");
-
-}
-
-
-/* Execute target application, monitoring for timeouts. Return status
-   information. The called program will update trace_bits[]. */
-
-static u8 run_target(char** argv) {
-
-  static struct itimerval it;
-  int status = 0;
-  u32 tb4;
-
-  
-  child_timed_out = 0;
-
-  /* After this memset, trace_bits[] are effectively volatile, so we
-     must prevent any earlier operations from venturing into that
-     territory. */
-
-  memset(trace_bits, 0, MAP_SIZE);
-  MEM_BARRIER();
-
-  /* If we're running in "dumb" mode, we can't rely on the fork server
-     logic compiled into the target program, so we will just keep calling
-     execve(). There is a bit of code duplication between here and 
-     init_forkserver(), but c'est la vie. */
-
-  if (dumb_mode == 1 || no_forkserver) {
-
-    child_pid= fork();
-
-    if (child_pid < 0) PFATAL("fork() failed");
-
-    if (!child_pid) {
+    if (!forksrv_pid[i]) {
 
       struct rlimit r;
+
+      /* Umpf. On OpenBSD, the default fd limit for root users is set to
+        soft 128. Let's try to fix that... */
+
+      if (!getrlimit(RLIMIT_NOFILE, &r) && r.rlim_cur < FORKSRV_FD + 2) {
+
+        r.rlim_cur = FORKSRV_FD + 2;
+        setrlimit(RLIMIT_NOFILE, &r); /* Ignore errors */
+
+      }
 
       if (mem_limit) {
 
@@ -2069,11 +1926,19 @@ static u8 run_target(char** argv) {
 
 #else
 
+        /* This takes care of OpenBSD, which doesn't have RLIMIT_AS, but
+           according to reliable sources, RLIMIT_DATA covers anonymous
+           maps - so we should be getting good protection against OOM bugs. */
+
         setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
 
 #endif /* ^RLIMIT_AS */
 
+
       }
+
+      /* Dumping cores is slow and can lead to anomalies if SIGKILL is delivered
+         before the dump is complete. */
 
       r.rlim_max = r.rlim_cur = 0;
 
@@ -2085,7 +1950,11 @@ static u8 run_target(char** argv) {
       setsid();
 
       dup2(dev_null_fd, 1);
-      dup2(dev_null_fd, 2);
+      
+      if(!is_qemu_log)
+        dup2(dev_null_fd, 2);
+      else
+        dup2(qemu_log_fds[i], 2);
 
       if (out_file) {
 
@@ -2100,85 +1969,379 @@ static u8 run_target(char** argv) {
 
       close(dev_null_fd);
 
+      /* Set up control and status pipes, close the unneeded original fds. */
+
+      if (dup2(ctl_pipe[0], FORKSRV_FD ) < 0) PFATAL("dup2() failed");
+      if (dup2(st_pipe[1], FORKSRV_FD + 1) < 0) PFATAL("dup2() failed");
+
+      close(ctl_pipe[0]);
+      close(ctl_pipe[1]);
+      close(st_pipe[0]);
+      close(st_pipe[1]);
+
+      /* This should improve performance a bit, since it stops the linker from
+         doing extra work post-fork(). */
+
+      setenv("LD_BIND_NOW", "1", 0);
+
       /* Set sane defaults for ASAN if nothing else specified. */
 
       setenv("ASAN_OPTIONS", "abort_on_error=1:"
                              "detect_leaks=0:"
                              "allocator_may_return_null=1", 0);
 
+      /* MSAN is tricky, because it doesn't support abort_on_error=1 at this
+         point. So, we do this in a very hacky way. */
+
       setenv("MSAN_OPTIONS", "exit_code=" STRINGIFY(MSAN_ERROR) ":"
                              "msan_track_origins=0", 0);
 
-      execv(target_path, argv);
+      execv(target_path, argv + i * 4);
 
-      /* Use a distinctive bitmap value to tell the parent about execv()
+      /* Use a distinctive bitmap signature to tell the parent about execv()
          falling through. */
 
-      *(u32*)trace_bits = EXEC_FAIL_SIG;
+      *(u32*)(trace_bits[i]) = EXEC_FAIL_SIG;
       exit(0);
 
     }
 
-  } else {
+    /* Close the unneeded endpoints. */
 
-    s32 res;
+    close(ctl_pipe[0]);
+    close(st_pipe[1]);
 
-    /* In non-dumb mode, we have the fork server up and running, so simply
-       tell it to have at it, and then read back PID. */
+    fsrv_ctl_fd[i] = ctl_pipe[1];
+    fsrv_st_fd[i]  = st_pipe[0];
 
-    if ((res = write(fsrv_ctl_fd, &status, 4)) != 4) {
 
-      if (stop_soon) return 0;
-      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+    if(write(fsrv_ctl_fd[i], &i, 4) != 4)
+    {
+      if (stop_soon) return ;
+      FATAL("Unable to send cb_id to the new fork server of CB %02i (OOM?)", i);
+    }
+
+    if(write(fsrv_ctl_fd[i], shm_id + i, 4) != 4)
+    {
+      if (stop_soon) return ;
+      FATAL("Unable to send shm_id to the new fork server of CB %02i (OOM?)", i);
+    }
+
+
+    /* Wait for the fork server to come up, but don't wait too long. */
+
+    it.it_value.tv_sec = ((exec_tmout * FORK_WAIT_MULT) / 1000);
+    it.it_value.tv_usec = ((exec_tmout * FORK_WAIT_MULT) % 1000) * 1000;
+
+    setitimer(ITIMER_REAL, &it, NULL);
+
+    rlen = read(fsrv_st_fd[i], &status, 4);
+
+    it.it_value.tv_sec = 0;
+    it.it_value.tv_usec = 0;
+
+    setitimer(ITIMER_REAL, &it, NULL);
+
+    /* If we have a four-byte "hello" message from the server, we're all set.
+       Otherwise, try to figure out what went wrong. */
+
+    if (rlen == 4) {
+      OKF("All right - fork server is up for cb_%02i.", i);
+      // return;
+      continue;
+    }
+
+    if (child_timed_out)
+      FATAL("Timeout while initializing fork server (adjusting -t may help)");
+
+    if (waitpid(forksrv_pid[i], &status, WUNTRACED) <= 0)
+      PFATAL("waitpid() failed");
+
+    if (WIFSIGNALED(status)) {
+
+      if (mem_limit && mem_limit < 500 && uses_asan) {
+
+        SAYF("\n" cLRD "[-] " cRST
+             "Whoops, the target binary crashed suddenly, before receiving any input\n"
+             "    from the fuzzer! Since it seems to be built with ASAN and you have a\n"
+             "    restrictive memory limit configured, this is expected; please read\n"
+             "    %s/notes_for_asan.txt for help.\n", doc_path);
+
+      } else if (!mem_limit) {
+
+        SAYF("\n" cLRD "[-] " cRST
+             "Whoops, the target binary crashed suddenly, before receiving any input\n"
+             "    from the fuzzer! There are several probable explanations:\n\n"
+
+             "    - The binary is just buggy and explodes entirely on its own. If so, you\n"
+             "      need to fix the underlying problem or find a better replacement.\n\n"
+
+#ifdef __APPLE__
+
+             "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
+             "      break afl-fuzz performance optimizations when running platform-specific\n"
+             "      targets. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
+
+#endif /* __APPLE__ */
+
+             "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
+             "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n");
+
+      } else {
+
+        SAYF("\n" cLRD "[-] " cRST
+             "Whoops, the target binary crashed suddenly, before receiving any input\n"
+             "    from the fuzzer! There are several probable explanations:\n\n"
+
+             "    - The current memory limit (%s) is too restrictive, causing the\n"
+             "      target to hit an OOM condition in the dynamic linker. Try bumping up\n"
+             "      the limit with the -m setting in the command line. A simple way confirm\n"
+             "      this diagnosis would be:\n\n"
+
+#ifdef RLIMIT_AS
+            "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+#else
+            "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+#endif /* ^RLIMIT_AS */
+
+             "      Tip: you can use ppvm (http://jwilk.net/software/ppvm) to quickly\n"
+             "      estimate the required amount of virtual memory for the binary.\n\n"
+
+             "    - The binary is just buggy and explodes entirely on its own. If so, you\n"
+             "      need to fix the underlying problem or find a better replacement.\n\n"
+
+#ifdef __APPLE__
+
+             "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
+             "      break afl-fuzz performance optimizations when running platform-specific\n"
+             "      targets. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
+
+#endif /* __APPLE__ */
+
+             "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
+             "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
+             DMS(mem_limit << 20), mem_limit - 1);
+
+      }
+
+      FATAL("Fork server crashed with signal %d", WTERMSIG(status));
 
     }
 
-    if ((res = read(fsrv_st_fd, &child_pid, 4)) != 4) {
+    if (*(u32*)(trace_bits[i]) == EXEC_FAIL_SIG)
+      FATAL("Unable to execute target application ('%s')", argv[0]);
 
-      if (stop_soon) return 0;
-      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+    if (mem_limit && mem_limit < 500 && uses_asan) {
+
+      SAYF("\n" cLRD "[-] " cRST
+             "Hmm, looks like the target binary terminated before we could complete a\n"
+             "    handshake with the injected code. Since it seems to be built with ASAN and\n"
+             "    you have a restrictive memory limit configured, this is expected; please\n"
+             "    read %s/notes_for_asan.txt for help.\n", doc_path);
+
+    } else if (!mem_limit) {
+
+      SAYF("\n" cLRD "[-] " cRST
+           "Hmm, looks like the target binary terminated before we could complete a\n"
+           "    handshake with the injected code. Perhaps there is a horrible bug in the\n"
+           "    fuzzer. Poke <lcamtuf@coredump.cx> for troubleshooting tips.\n");
+
+    } else {
+
+      SAYF("\n" cLRD "[-] " cRST
+           "Hmm, looks like the target binary terminated before we could complete a\n"
+           "    handshake with the injected code. There are two probable explanations:\n\n"
+
+           "    - The current memory limit (%s) is too restrictive, causing an OOM\n"
+           "      fault in the dynamic linker. This can be fixed with the -m option. A\n"
+           "      simple way to confirm the diagnosis may be:\n\n"
+
+#ifdef RLIMIT_AS
+          "      ( ulimit -Sv $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+#else
+          "      ( ulimit -Sd $[%llu << 10]; /path/to/fuzzed_app )\n\n"
+#endif /* ^RLIMIT_AS */
+
+          "      Tip: you can use ppvm (http://jwilk.net/software/ppvm) to quickly\n"
+          "      estimate the required amount of virtual memory for the binary.\n\n"
+
+          "    - Less likely, there is a horrible bug in the fuzzer. If other options\n"
+          "      fail, poke <lcamtuf@coredump.cx> for troubleshooting tips.\n",
+          DMS(mem_limit << 20), mem_limit - 1);
 
     }
 
-    if (child_pid <= 0) FATAL("Fork server is misbehaving (OOM?)");
+    FATAL("Fork server handshake failed for CB %02i", i);
 
   }
-  
+  OKF("init_forkserver() completes for %i cbs", num_of_cbs);
+  // exit(0);
+}
 
-  /* Configure timeout, as requested by user, then wait for child to terminate. */
 
-  it.it_value.tv_sec = (exec_tmout / 1000);
-  it.it_value.tv_usec = (exec_tmout % 1000) * 1000;
+/* Execute target application, monitoring for timeouts. Return status
+   information. The called program will update trace_bits[]. */
 
-  setitimer(ITIMER_REAL, &it, NULL);
+static u8 run_target(char** argv) {
 
-  /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
+  int i;
+  static struct itimerval it;
+  int* status = ck_alloc(sizeof(int) * num_of_cbs);
+  u32 tb4;
 
-  if (dumb_mode == 1 || no_forkserver) {
+  for(i=0; i<num_of_cbs; i++)
+  {
+    status[i] = 0;
+    child_timed_out = 0;
 
-    if (waitpid(child_pid, &status, WUNTRACED) <= 0) PFATAL("waitpid() failed");
+    /* After this memset, trace_bits[] are effectively volatile, so we
+       must prevent any earlier operations from venturing into that
+       territory. */
 
-  } else {
+    memset(trace_bits[i], 0, MAP_SIZE);
+    MEM_BARRIER();
 
-    s32 res;
+    /* If we're running in "dumb" mode, we can't rely on the fork server
+       logic compiled into the target program, so we will just keep calling
+       execve(). There is a bit of code duplication between here and 
+       init_forkserver(), but c'est la vie. */
 
-    if ((res = read(fsrv_st_fd, &status, 4)) != 4) {
+    if (dumb_mode == 1 || no_forkserver) {
 
-      if (stop_soon) return 0;
-      RPFATAL(res, "Unable to communicate with fork server");
+      child_pid[i] = fork();
+
+      if (child_pid[i] < 0) PFATAL("fork() failed");
+
+      if (!child_pid[i]) {
+
+        struct rlimit r;
+
+        if (mem_limit) {
+
+          r.rlim_max = r.rlim_cur = ((rlim_t)mem_limit) << 20;
+
+#ifdef RLIMIT_AS
+
+          setrlimit(RLIMIT_AS, &r); /* Ignore errors */
+
+#else
+
+          setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
+
+#endif /* ^RLIMIT_AS */
+
+        }
+
+        r.rlim_max = r.rlim_cur = 0;
+
+        setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
+
+        /* Isolate the process and configure standard descriptors. If out_file is
+           specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
+
+        setsid();
+
+        dup2(dev_null_fd, 1);
+        dup2(dev_null_fd, 2);
+
+        if (out_file) {
+
+          dup2(dev_null_fd, 0);
+
+        } else {
+
+          dup2(out_fd, 0);
+          close(out_fd);
+
+        }
+
+        close(dev_null_fd);
+
+        /* Set sane defaults for ASAN if nothing else specified. */
+
+        setenv("ASAN_OPTIONS", "abort_on_error=1:"
+                               "detect_leaks=0:"
+                               "allocator_may_return_null=1", 0);
+
+        setenv("MSAN_OPTIONS", "exit_code=" STRINGIFY(MSAN_ERROR) ":"
+                               "msan_track_origins=0", 0);
+
+        execv(target_path, argv + i * 4);
+
+        /* Use a distinctive bitmap value to tell the parent about execv()
+           falling through. */
+
+        *(u32*)(trace_bits[i]) = EXEC_FAIL_SIG;
+        exit(0);
+
+      }
+
+    } else {
+
+      s32 res;
+
+      /* In non-dumb mode, we have the fork server up and running, so simply
+         tell it to have at it, and then read back PID. */
+
+      if ((res = write(fsrv_ctl_fd[i], status + i, 4)) != 4) {
+
+        if (stop_soon) return 0;
+        RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+
+      }
+
+      // if ((res = read(fsrv_st_fd[i], &child_pid, 4)) != 4) {
+      if ((res = read(fsrv_st_fd[i], child_pid + i, 4)) != 4) {
+
+        if (stop_soon) return 0;
+        RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+
+      }
+
+      if (child_pid[i] <= 0) FATAL("Fork server is misbehaving (OOM?)");
 
     }
-
   }
- 
-  child_pid = 0;
-  it.it_value.tv_sec = 0;
-  it.it_value.tv_usec = 0;
+  // for(i=0; i<num_of_cbs; i++)
+  //   ACTF("child_pid_%d: %d", i, child_pid[i]);
+  // while(1);
+  for(i=0; i<num_of_cbs; i++)
+  {
+    status[i] = 0;
+    /* Configure timeout, as requested by user, then wait for child to terminate. */
 
-  setitimer(ITIMER_REAL, &it, NULL);
+    it.it_value.tv_sec = (exec_tmout / 1000);
+    it.it_value.tv_usec = (exec_tmout % 1000) * 1000;
 
-  total_execs++;
-  
+    setitimer(ITIMER_REAL, &it, NULL);
+
+    /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
+
+    if (dumb_mode == 1 || no_forkserver) {
+
+      if (waitpid(child_pid[i], status + i, WUNTRACED) <= 0) PFATAL("waitpid() failed");
+
+    } else {
+
+      s32 res;
+
+      if ((res = read(fsrv_st_fd[i], status + i, 4)) != 4) {
+
+        if (stop_soon) return 0;
+        RPFATAL(res, "Unable to communicate with fork server");
+
+      }
+
+    }
+    // ACTF("status[%d]: %d", i, status[i]);
+    child_pid[i] = 0;
+    it.it_value.tv_sec = 0;
+    it.it_value.tv_usec = 0;
+
+    setitimer(ITIMER_REAL, &it, NULL);
+
+    total_execs++;
+  }
 
     /* Any subsequent operations on trace_bits must not be moved by the
        compiler above this point. Past this location, trace_bits[] behave
@@ -2186,34 +2349,50 @@ static u8 run_target(char** argv) {
 
   MEM_BARRIER();
 
-  tb4 = *(u32*)trace_bits;
+  for(i=0; i<num_of_cbs; i++)
+  {
+    if(*(u32*)(trace_bits[i]) == EXEC_FAIL_SIG)
+    {
+      tb4 = EXEC_FAIL_SIG;
+      break;
+    }
+  }
 
 #ifdef __x86_64__
-  classify_counts((u64*)trace_bits);
+    classify_counts((u64**)trace_bits);
 #else
-  classify_counts((u32*)trace_bits);
+    classify_counts((u32**)trace_bits);
 #endif /* ^__x86_64__ */
   
   /* Report outcome to caller. */
 
   if (child_timed_out) return FAULT_HANG;
 
-  if (WIFSIGNALED(status) && !stop_soon) {
-    kill_signal = WTERMSIG(status);
-    return FAULT_CRASH;
+  for(i=0; i<num_of_cbs; i++)
+  {
+    if (WIFSIGNALED(status[i]) && !stop_soon) {
+      kill_signal = WTERMSIG(status[i]);
+      ck_free(status);
+      return FAULT_CRASH;
+    }
+
+  /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
+     must use a special exit code. */
+
+    if (uses_asan && WEXITSTATUS(status[i]) == MSAN_ERROR) {
+      kill_signal = 0;
+      ck_free(status);
+      return FAULT_CRASH;
+    }
+
+    if ((dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
+    {
+      ck_free(status);
+      return FAULT_ERROR;
+    }
   }
 
-/* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
-   must use a special exit code. */
-
-  if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
-    kill_signal = 0;
-    return FAULT_CRASH;
-  }
-
-  if ((dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
-    return FAULT_ERROR;
-
+  ck_free(status);
   return FAULT_NONE;
 
 }
@@ -2336,7 +2515,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       goto abort_calibration;
     }
 
-    cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+    cksum = hash32_v(trace_bits, MAP_SIZE, num_of_cbs, HASH_CONST);
     // ACTF("cksum: %u @%d", cksum, stage_cur);
     if (q->exec_cksum != cksum) {
 
@@ -2412,7 +2591,9 @@ static void check_map_coverage(void) {
 
   for (i = (1 << (MAP_SIZE_POW2 - 1)); i < MAP_SIZE; i++)
   {
-    if (trace_bits[i]) return;
+    u32 j;
+    for(j=0; j<num_of_cbs; j++)
+      if (trace_bits[j][i]) return;
   }
 
   WARNF("Recompile binary with newer version of afl to improve coverage!");
@@ -2846,7 +3027,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   
   //Update path freq. No change to semantics
   khiter_t k;
-  u32 key_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+  u32 key_cksum = hash32_v(trace_bits, MAP_SIZE, num_of_cbs, HASH_CONST);
   k = kh_get(32, cksum2paths, key_cksum);
   if (k != kh_end(cksum2paths)){
     ++kh_value(cksum2paths, k);
@@ -2878,6 +3059,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       queued_with_cov++;
     }
 
+    // queue_top->exec_cksum = hash32_v(trace_bits, MAP_SIZE, num_of_cbs, HASH_CONST);
     queue_top->exec_cksum = key_cksum; //hash32(trace_bits, MAP_SIZE, HASH_CONST);
     int ret;
     if (k == kh_end(cksum2paths)){
@@ -2919,9 +3101,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       if (!dumb_mode) {
 
 #ifdef __x86_64__
-        simplify_trace((u64*)trace_bits);
+        simplify_trace((u64**)trace_bits);
 #else
-        simplify_trace((u32*)trace_bits);
+        simplify_trace((u32**)trace_bits);
 #endif /* ^__x86_64__ */
 
         if (!has_new_bits(virgin_hang)) return keeping;
@@ -2958,9 +3140,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       if (!dumb_mode) {
 
 #ifdef __x86_64__
-        simplify_trace((u64*)trace_bits);
+        simplify_trace((u64**)trace_bits);
 #else
-        simplify_trace((u32*)trace_bits);
+        simplify_trace((u32**)trace_bits);
 #endif /* ^__x86_64__ */
 
         if (!has_new_bits(virgin_crash)) return keeping;
@@ -3030,9 +3212,9 @@ static u32 find_start_position(void) {
 
   if (!resuming_fuzz) return 0;
 
-  if (in_place_resume) fn = alloc_printf("%s/fuzzer_stats", out_dir);
-  else fn = alloc_printf("%s/../fuzzer_stats", in_dir);
-  // fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+  // if (in_place_resume) fn = alloc_printf("%s/fuzzer_stats", out_dir);
+  // else fn = alloc_printf("%s/../fuzzer_stats", in_dir);
+  fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
 
   fd = open(fn, O_RDONLY);
   ck_free(fn);
@@ -3058,8 +3240,8 @@ static void write_stats_file(double bitmap_cvg, double eps) {
 
   static double last_bcvg, last_eps;
 
-  u8* fn = alloc_printf("%s/fuzzer_stats", out_dir);
-  // u8* fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+  // u8* fn = alloc_printf("%s/fuzzer_stats", out_dir);
+  u8* fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
   s32 fd;
   FILE* f;
 
@@ -3302,8 +3484,8 @@ dir_cleanup_failed:
 static void maybe_delete_out_dir(void) {
 
   FILE* f;
-  u8 *fn = alloc_printf("%s/fuzzer_stats", out_dir);
-  // u8* fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+  // u8 *fn = alloc_printf("%s/fuzzer_stats", out_dir);
+  u8* fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
   static s32 out_dir_fd;
 
   /* See if the output directory is locked. If yes, bail out. If not,
@@ -3388,8 +3570,8 @@ static void maybe_delete_out_dir(void) {
   /* Okay, let's get the ball rolling! First, we need to get rid of the entries
      in <out_dir>/.synced/.../id:*, if any are present. */
 
-  // fn = alloc_printf("%s/.synced", out_dir);
-  fn = alloc_printf("%s/.synced", local_out_dir);
+  fn = alloc_printf("%s/.synced", out_dir);
+  // fn = alloc_printf("%s/.synced", local_out_dir);
   if (delete_files(fn, NULL)) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -3473,25 +3655,25 @@ static void maybe_delete_out_dir(void) {
 
   /* And now, for some finishing touches. */
 
-  // fn = alloc_printf("%s/.cur_input", out_dir);
-  fn = alloc_printf("%s/.cur_input", local_out_dir);
+  fn = alloc_printf("%s/.cur_input", out_dir);
+  // fn = alloc_printf("%s/.cur_input", local_out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
-  // fn = alloc_printf("%s/fuzz_bitmap", out_dir);
-  fn = alloc_printf("%s/fuzz_bitmap", local_out_dir);
+  fn = alloc_printf("%s/fuzz_bitmap", out_dir);
+  // fn = alloc_printf("%s/fuzz_bitmap", local_out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
   if (!in_place_resume) {
-    fn  = alloc_printf("%s/fuzzer_stats", out_dir);
-    // fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
+    // fn  = alloc_printf("%s/fuzzer_stats", out_dir);
+    fn = alloc_printf("%s/fuzzer_stats", remote_out_dir);
     if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
     ck_free(fn);
   }
 
-  // fn = alloc_printf("%s/plot_data", out_dir);
-  fn = alloc_printf("%s/plot_data", local_out_dir);
+  fn = alloc_printf("%s/plot_data", out_dir);
+  // fn = alloc_printf("%s/plot_data", local_out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -3603,7 +3785,7 @@ static void show_stats(void) {
 
   /* Compute some mildly useful bitmap stats. */
 
-  t_bits = (MAP_SIZE << 3) - count_bits(virgin_bits);
+  t_bits = ((MAP_SIZE * num_of_cbs) << 3) - count_bits(virgin_bits);
 
   /* Now, for the visuals... */
 
@@ -4064,7 +4246,18 @@ static u32 next_p2(u32 val) {
 static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
   static u8 tmp[64];
-  static u8 clean_trace[MAP_SIZE];
+  // static u8 clean_trace[MAP_SIZE];
+  static u8** clean_trace = NULL;
+  int cb_id;
+  if(!clean_trace)
+  {
+    clean_trace = ck_alloc(sizeof(u8*) * num_of_cbs);
+    for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+    {
+      clean_trace[cb_id] = ck_alloc(sizeof(u8) * MAP_SIZE);
+    }
+  }
+
 
   u8  needs_write = 0, fault = 0;
   u32 trim_exec = 0;
@@ -4112,7 +4305,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       /* Note that we don't keep track of crashes or hangs here; maybe TODO? */
 
-      cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+      cksum = hash32_v(trace_bits, MAP_SIZE, num_of_cbs, HASH_CONST);
 
       /* If the deletion had no impact on the trace, make it permanent. This
          isn't perfect for variable-path inputs, but we're just making a
@@ -4135,7 +4328,8 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
         if (!needs_write) {
 
           needs_write = 1;
-          memcpy(clean_trace, trace_bits, MAP_SIZE);
+          for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+            memcpy(clean_trace[cb_id], trace_bits[cb_id], MAP_SIZE);
 
         }
 
@@ -4167,8 +4361,8 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
     ck_write(fd, in_buf, q->len, q->fname);
     close(fd);
-    
-    memcpy(trace_bits, clean_trace, MAP_SIZE);
+    for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+      memcpy(trace_bits[cb_id], clean_trace[cb_id], MAP_SIZE);
     update_bitmap_score(q);
 
   }
@@ -4534,7 +4728,7 @@ static u8 fuzz_one(char** argv) {
 
     if ((stage_cur & 7) == 7) {
 
-      u32 cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+      u32 cksum = hash32_v(trace_bits, MAP_SIZE, num_of_cbs, HASH_CONST);
 
       if (stage_cur == stage_max - 1 && cksum == prev_cksum) {
 
@@ -4692,7 +4886,7 @@ static u8 fuzz_one(char** argv) {
          without wasting time on checksums. */
 
       if (!dumb_mode && len >= EFF_MIN_LEN)
-        cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+        cksum = hash32_v(trace_bits, MAP_SIZE, num_of_cbs, HASH_CONST);
       else
         cksum = ~queue_cur->exec_cksum;
 
@@ -6055,10 +6249,12 @@ static void sync_fuzzers(char** argv) {
 
     if (sd_ent->d_name[0] == '.' || !strcmp(sync_id, sd_ent->d_name)) continue;
 
-    if (!strcmp(sync_dir, out_dir))
-    {
-      if(!startswith(sd_ent->d_name, "driller") && !endswith(sd_ent->d_name, "filter") && !startswith(sd_ent->d_name, "traffic")) continue;
-    }
+    
+    if(!startswith(sd_ent->d_name, "driller")    && 
+      !endswith(sd_ent->d_name, "filter")    && 
+      !startswith(sd_ent->d_name, "traffic") &&
+      !startswith(sd_ent->d_name, "fuzz")) continue;
+    
     /* Skip anything that doesn't have a queue/ subdirectory. */
 
     if(startswith(sd_ent->d_name, "driller"))
@@ -6083,8 +6279,8 @@ static void sync_fuzzers(char** argv) {
 
     /* Retrieve the ID of the last seen test case. */
 
-    // qd_synced_path = alloc_printf("%s/.synced/%s", out_dir, sd_ent->d_name);
-    qd_synced_path = alloc_printf("%s/.synced/%s", local_out_dir, sd_ent->d_name);
+    qd_synced_path = alloc_printf("%s/.synced/%s", out_dir, sd_ent->d_name);
+    // qd_synced_path = alloc_printf("%s/.synced/%s", local_out_dir, sd_ent->d_name);
 
     id_fd = open(qd_synced_path, O_RDWR | O_CREAT, 0600);
 
@@ -6189,9 +6385,12 @@ static void handle_stop_sig(int sig) {
 
   stop_soon = 1; 
 
-  if (child_pid > 0) kill(child_pid, SIGKILL);
-  if (forksrv_pid > 0) kill(forksrv_pid, SIGKILL);
-
+  int i;
+  for(i=0; i<num_of_cbs; i++)
+  {
+    if (child_pid[i] > 0) kill(child_pid[i], SIGKILL);
+    if (forksrv_pid[i] > 0) kill(forksrv_pid[i], SIGKILL);
+  }
 }
 
 
@@ -6207,16 +6406,36 @@ static void handle_skipreq(int sig) {
 
 static void handle_timeout(int sig) {
 
-  if (child_pid > 0) {
+  child_timed_out = 1; 
+  int tag = 0;
+  int i;
+  // for(i=0; i<num_of_cbs; i++)
+  // {
+  //   if (child_pid[i] > 0) {
 
-    child_timed_out = 1; 
-    kill(child_pid, SIGKILL);
+  //     kill(child_pid[i], SIGKILL);
 
-  } else if (child_pid == -1 && forksrv_pid > 0) {
+  //   } else if (child_pid[i] == -1 && forksrv_pid[i] > 0) {
 
-    child_timed_out = 1; 
-    kill(forksrv_pid, SIGKILL);
+  //     kill(forksrv_pid[i], SIGKILL);
 
+  //   }
+  // }
+  for(i=0; i<num_of_cbs; i++)
+  {
+    if(child_pid[i] > 0)
+    {
+      kill(child_pid[i], SIGKILL);
+      tag = 1;
+    }
+  }
+  if(tag == 0)
+  {
+    for(i=0; i<num_of_cbs; i++)
+    {
+      if(child_pid[i] == -1 && forksrv_pid[i] > 0)
+        kill(forksrv_pid[i], SIGKILL);
+    }
   }
 
 }
@@ -6315,10 +6534,10 @@ static void check_binary(u8* fname) {
 
 #ifndef __APPLE__
 
-  if (f_data[0] != 0x7f || memcmp(f_data + 1, "ELF", 3))
-    FATAL("Program '%s' is not an ELF binary", target_path);
-  // if (f_data[0] != 0x7f || memcmp(f_data + 1, "CGC", 3))
-  //   FATAL("Program '%s' is not an CGC binary", target_path);
+  // if (f_data[0] != 0x7f || memcmp(f_data + 1, "ELF", 3))
+  //   FATAL("Program '%s' is not an ELF binary", target_path);
+  if (f_data[0] != 0x7f || memcmp(f_data + 1, "CGC", 3))
+    FATAL("Program '%s' is not an CGC binary", target_path);
 
 #else
 
@@ -6472,15 +6691,19 @@ static void usage(u8* argv0) {
 
 
 /* Prepare output fds for qemu_log*/
-static void setup_qemu_log_fd(void)
+static void setup_qemu_log_fds(void)
 {
   if(!qemu_mode) FATAL("qemu_log only supported under qemu_mode");
 
-  u8* tmp = alloc_printf("%s/qemu_log", out_dir);
-  qemu_log_fd = open(tmp, O_RDWR|O_CREAT, 0600);
-  if(qemu_log_fd < 0) PFATAL("unalbe to open %s", tmp);
-  ck_free(tmp);
-
+  qemu_log_fds = ck_alloc(sizeof(s32) * num_of_cbs);
+  int cb_id;
+  for(cb_id=0; cb_id<num_of_cbs; cb_id++)
+  {
+    u8* tmp = alloc_printf("%s/qemu_log_%d", out_dir, cb_id);
+    qemu_log_fds[cb_id] = open(tmp, O_RDWR|O_CREAT, 0600);
+    if(qemu_log_fds[cb_id] < 0) PFATAL("unalbe to open %s", tmp);
+    ck_free(tmp);
+  }
 }
 /* Prepare output directories and fds. */
 
@@ -6493,10 +6716,6 @@ static void setup_dirs_fds(void) {
 
   if (sync_id && mkdir(sync_dir, 0700) && errno != EEXIST)
       PFATAL("Unable to create '%s'", sync_dir);
-
-  if ( mkdir(local_out_dir, 0700) && errno != EEXIST)
-      PFATAL("Unable to create '%s'", local_out_dir);
- 
 
   if (mkdir(out_dir, 0700)) {
 
@@ -6553,9 +6772,9 @@ static void setup_dirs_fds(void) {
 
   if (sync_id) {
     
-    // mkdir(remote_out_dir, 0700);
-    // tmp = alloc_printf("%s/.synced/", out_dir);
-    tmp = alloc_printf("%s/.synced/", local_out_dir);
+    mkdir(remote_out_dir, 0700);
+    tmp = alloc_printf("%s/.synced/", out_dir);
+    // tmp = alloc_printf("%s/.synced/", local_out_dir);
     if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
     ck_free(tmp);
 
@@ -6583,8 +6802,8 @@ static void setup_dirs_fds(void) {
 
   /* Gnuplot output file. */
 
-  // tmp = alloc_printf("%s/plot_data", out_dir);
-  tmp = alloc_printf("%s/plot_data", local_out_dir);
+  tmp = alloc_printf("%s/plot_data", out_dir);
+  // tmp = alloc_printf("%s/plot_data", local_out_dir);
   fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (fd < 0) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
@@ -6604,8 +6823,8 @@ static void setup_dirs_fds(void) {
 
 static void setup_stdio_file(void) {
 
-  // u8* fn = alloc_printf("%s/.cur_input", out_dir);
-  u8* fn = alloc_printf("%s/.cur_input", local_out_dir);
+  u8* fn = alloc_printf("%s/.cur_input", out_dir);
+  // u8* fn = alloc_printf("%s/.cur_input", local_out_dir);
 
   unlink(fn); /* Ignore errors */
 
@@ -6843,17 +7062,13 @@ static void fix_up_sync(void) {
 
   if (strlen(sync_id) > 64) FATAL("Fuzzer ID too long");
 
+  x = alloc_printf("%s/%s", out_dir, sync_id);
 
   if(!sync_dir)
   {
     sync_dir = out_dir;
   }
-
-  x = alloc_printf("%s/%s", out_dir, sync_id);
   out_dir  = x;
-
-  x = alloc_printf("%s/%s", local_out_dir, sync_id);
-  local_out_dir = x;
 
   if (!force_deterministic) {
     skip_deterministic = 1;
@@ -6908,8 +7123,8 @@ static void detect_file_args(char** argv) {
 
       if (!out_file)
       {
-        // out_file = alloc_printf("%s/.cur_input", out_dir);
-        out_file = alloc_printf("%s/.cur_input", local_out_dir);
+        out_file = alloc_printf("%s/.cur_input", out_dir);
+        // out_file = alloc_printf("%s/.cur_input", local_out_dir);
       }
 
       /* Be sure that we're always using fully-qualified paths. */
@@ -6922,7 +7137,6 @@ static void detect_file_args(char** argv) {
       *aa_loc = 0;
       n_arg = alloc_printf("%s%s%s", argv[i], aa_subst, aa_loc + 2);
       argv[i] = n_arg;
-      ACTF("n_arg: %s", n_arg);
       *aa_loc = '@';
 
       if (out_file[0] != '/') ck_free(aa_subst);
@@ -6984,68 +7198,69 @@ static void setup_signal_handlers(void) {
 
 static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
 
-  char** new_argv = ck_alloc(sizeof(char*) * (argc + 4));
-  u8 *tmp, *cp, *rsl, *own_copy;
-
-  memcpy(new_argv + 3, argv + 1, sizeof(char*) * argc);
-
-  new_argv[2] = target_path;
-  new_argv[1] = "--";
-
-  /* Now we need to actually find the QEMU binary to put in argv[0]. */
-
+  /* First we should set the target_path to afl-qemu-trace */
+  u8* tmp, *cp, *rsl, *own_copy;
   tmp = getenv("AFL_PATH");
-
-  if (tmp) {
-
+  if (tmp) 
+  {
     cp = alloc_printf("%s/afl-qemu-trace", tmp);
 
     if (access(cp, X_OK))
       FATAL("Unable to find '%s'", tmp);
 
-    target_path = new_argv[0] = cp;
-    return new_argv;
-
+    target_path =  cp;
+    goto set_tp_done;
   }
 
   own_copy = ck_strdup(own_loc);
   rsl = strrchr(own_copy, '/');
-
-  if (rsl) {
-
+  if (rsl) 
+  {
     *rsl = 0;
-
     cp = alloc_printf("%s/afl-qemu-trace", own_copy);
     ck_free(own_copy);
-
-    if (!access(cp, X_OK)) {
-
-      target_path = new_argv[0] = cp;
-      return new_argv;
-
+    if (!access(cp, X_OK)) 
+    {
+      target_path =  cp;
+      goto set_tp_done;
     }
 
   } else ck_free(own_copy);
-
-  if (!access(AFL_PATH "/afl-qemu-trace", X_OK)) {
-
-    target_path = new_argv[0] = ck_strdup(AFL_PATH "/afl-qemu-trace");
-    return new_argv;
-
+  
+  if (!access(AFL_PATH "/afl-qemu-trace", X_OK)) 
+  {
+    target_path =  ck_strdup(AFL_PATH "/afl-qemu-trace");
+    goto set_tp_done;
   }
 
   SAYF("\n" cLRD "[-] " cRST
-       "Oops, unable to find the 'afl-qemu-trace' binary. The binary must be built\n"
-       "    separately by following the instructions in qemu_mode/README.qemu. If you\n"
-       "    already have the binary installed, you may need to specify AFL_PATH in the\n"
-       "    environment.\n\n"
+         "Oops, unable to find the 'afl-qemu-trace' binary. The binary must be built\n"
+         "    separately by following the instructions in qemu_mode/README.qemu. If you\n"
+         "    already have the binary installed, you may need to specify AFL_PATH in the\n"
+         "    environment.\n\n"
 
-       "    Of course, even without QEMU, afl-fuzz can still work with binaries that are\n"
-       "    instrumented at compile time with afl-gcc. It is also possible to use it as a\n"
-       "    traditional \"dumb\" fuzzer by specifying '-n' in the command line.\n");
+         "    Of course, even without QEMU, afl-fuzz can still work with binaries that are\n"
+         "    instrumented at compile time with afl-gcc. It is also possible to use it as a\n"
+         "    traditional \"dumb\" fuzzer by specifying '-n' in the command line.\n");
 
   FATAL("Failed to locate 'afl-qemu-trace'.");
-
+  
+set_tp_done:  
+  ACTF("reset target_path is done");
+  char** new_argv = ck_alloc(sizeof(char*) * argc * 4);
+  int i;
+  for(i=0; i<argc; i++)
+  {
+    int th = i * 4;
+    new_argv[th] = target_path;
+    if(is_qemu_log)
+      new_argv[th+1] = "-strace";
+    else
+      new_argv[th+1] = "--";
+    new_argv[th+2] = ck_strdup(argv[i]);
+    new_argv[th+3] = NULL;
+  } 
+  return new_argv;
 }
 
 
@@ -7111,9 +7326,9 @@ int main(int argc, char** argv) {
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
 
   // local_out_dir = alloc_printf("/home/vagrant/local_outputs");
-  // remote_out_dir = alloc_printf("/home/vagrant/shared_outputs");
+  remote_out_dir = alloc_printf("/home/vagrant/shared_outputs");
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QLs:l:")) > 0) 
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QLs:")) > 0) 
   {
     // ACTF("opt: %c", opt);
     switch (opt) {
@@ -7144,17 +7359,12 @@ int main(int argc, char** argv) {
         if (sync_id) FATAL("Multiple -S or -M options not supported");
         // local_out_dir = alloc_printf("%s/%s", local_out_dir, sync_id);
         sync_id = optarg;
-        // remote_out_dir = alloc_printf("%s/%s", remote_out_dir, sync_id);
+        remote_out_dir = alloc_printf("%s/%s", remote_out_dir, sync_id);
         break;
 
       case 's':
         if(sync_dir) FATAL("Multiple -s options not supported");
         sync_dir = optarg;
-        break;
-
-      case 'l':
-        if(local_out_dir) FATAL("Multiple -l options not supported");
-        local_out_dir = optarg;
         break;
 
       case 'f': /* target file */
@@ -7323,12 +7533,17 @@ int main(int argc, char** argv) {
   check_crash_handling();
   check_cpu_governor();
 
+  //assume that all remaining arguments are about /path/to/cb
+  num_of_cbs = argc - optind;
+  top_rated = ck_alloc(sizeof(struct queue_entry*) * num_of_cbs * MAP_SIZE);
+  init_cbs_comm_fds();
+
   setup_shm();
 
   setup_dirs_fds();
 
   if(is_qemu_log)
-    setup_qemu_log_fd();
+    setup_qemu_log_fds();
 
   read_testcases();
   load_auto();
@@ -7341,29 +7556,32 @@ int main(int argc, char** argv) {
 
   if (!out_file) setup_stdio_file();
 
-  // stat_vector[0] = out_dir;
-  // int _i = 0;
-  // while(argv[optind+_i])
-  // {
-  //   check_binary(argv[optind + _i]);
-  //   stat_vector[_i+1] = argv[optind + _i];
-  //   _i++;
-  // }
-  check_binary(argv[optind]);
+  stat_vector[0] = out_dir;
+  int _i = 0;
+  while(argv[optind+_i])
+  {
+    check_binary(argv[optind + _i]);
+    stat_vector[_i+1] = argv[optind + _i];
+    _i++;
+  }
 
   start_time = get_cur_time();
  
   if (qemu_mode)
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
-    use_argv = argv + optind; 
+    use_argv = argv + optind;
 
-  int _j;
-  for(_j=0; _j<3; _j++)
-    ACTF("use_argv[%i]: %s", _j , use_argv[_j]);
+  ACTF("There are %i CBs for this sample", num_of_cbs); 
+  _i = 0;
+  for(_i = 0; _i < num_of_cbs; _i++)
+  {
+    int _j;
+    for(_j=0; _j<3; _j++)
+      ACTF("use_argv[%i]: %s", _i*4 + _j , use_argv[_i*4 + _j]);
 
-  ACTF("use_argv[%i]: 0x%02lx", 3, (unsigned long int)use_argv[3]);
-  
+    ACTF("use_argv[%i]: 0x%02lx",_i*4 + 3, (unsigned long int)use_argv[_i*4 + 3]);
+  }
   ACTF("target_path_: %s", target_path);
 
   perform_dry_run(use_argv);

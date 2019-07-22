@@ -73,7 +73,6 @@ abi_ulong afl_entry_point, /* ELF entry point (_start) */
 
 static unsigned char afl_fork_child;
 
-unsigned int afl_forksrv_pid;
 
 /* the id for multiple CBs*/
 static int cb_id = -1;
@@ -173,7 +172,7 @@ static void afl_setup(void) {
 /* Fork server logic, invoked once we hit _start. */
 
 static void afl_forkserver(CPUArchState *env) {
-  
+  //fprintf(stderr, "[%]afl_forkserver\n");
   static unsigned char tmp[4];
 
   if (!afl_area_ptr) return;
@@ -182,9 +181,6 @@ static void afl_forkserver(CPUArchState *env) {
      to talk, assume that we're not running in forkserver mode. */
 
   if (write(FORKSRV_FD + 1, tmp, 4) != 4) return;
-
-  afl_forksrv_pid = getpid();
-
 
   /* All right, let's await orders... */
 
@@ -279,19 +275,12 @@ static inline void afl_maybe_log(abi_ulong cur_loc, abi_ulong end) {
 
   abi_ulong index = cur_loc ^ prev_loc;
 
-  fprintf(stderr, "afl_maybe_log\n");
-
   if(afl_area_ptr[index] == 0 && (fcntl(CODE_BLOCK_INFO_FD, F_GETFD) != -1 || errno != EBADF))
   {
     char cb_buf[30];
-    int cx = snprintf(cb_buf, 30, "0x%08x,0x%08x,%d\n", cur_loc, end, cb_id);
-    // fprintf(stderr, "cb: %s\n", cb_buf);
+    int cx = snprintf(cb_buf, 30, "%08x,%08x,%d\n", cur_loc, end, cb_id);
     write(CODE_BLOCK_INFO_FD, cb_buf, cx);
   }
-  // else
-  // {
-  //   fprintf(stderr, "erro: %d, %d\n", fcntl(CODE_BLOCK_INFO_FD, F_GETFD),errno);
-  // }
   afl_area_ptr[index]++;
   prev_loc = cur_loc >> 1;
 

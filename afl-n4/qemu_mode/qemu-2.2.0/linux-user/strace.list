@@ -1,0 +1,41 @@
+/*
+ * Note that if you change format strings in these, check also
+ * that corresponding print functions are able to handle string
+ * locking correctly (see strace.c).
+ */
+#define TARGET_NR_terminate 1
+#define TARGET_NR_transmit 2
+#define TARGET_NR_receive 3
+#define TARGET_NR_fdwait 4
+#define TARGET_NR_allocate 5
+#define TARGET_NR_deallocate 6
+#define TARGET_NR_random 7
+
+#ifdef TARGET_NR_terminate
+{ TARGET_NR_terminate, "terminate" , "%s(%d)\n", NULL, NULL },
+#endif
+
+#ifdef TARGET_NR_allocate
+{ TARGET_NR_allocate, "allocate" , "%s(%#x, %i, %p)", NULL, NULL },
+#endif
+
+#ifdef TARGET_NR_deallocate
+{ TARGET_NR_deallocate, "deallocate" , "%s(%p, %#x)", NULL, NULL },
+#endif
+
+#ifdef TARGET_NR_fdwait
+{ TARGET_NR_fdwait, "fdwait" , "%s(%i, %p, %p, %p, %i)", NULL, NULL },
+#endif
+
+#ifdef TARGET_NR_random
+{ TARGET_NR_random, "random" , "%s(%p, %#x, %p)", NULL, NULL },
+#endif
+
+#ifdef TARGET_NR_receive
+{ TARGET_NR_receive, "receive" , "%s(%i, %p, %#x, %p)", NULL, NULL },
+#endif
+
+#ifdef TARGET_NR_transmit
+{ TARGET_NR_transmit, "transmit" , "%s(%i, %p, %#x, %p)", NULL, NULL },
+#endif
+

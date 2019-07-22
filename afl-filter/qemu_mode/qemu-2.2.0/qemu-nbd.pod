@@ -1,0 +1,129 @@
+=head1 NAME
+
+qemu-nbd - QEMU Disk Network Block Device Server
+
+=head1 SYNOPSIS
+
+usage: qemu-nbd [OPTION]...  I<filename>
+
+=head1 DESCRIPTION
+
+
+Export QEMU disk image using NBD protocol.
+
+
+=head1 OPTIONS
+
+
+=over 4
+
+
+=item I<filename>
+
+ is a disk image filename
+
+=item B<-p, --port=>I<port>
+
+  port to listen on (default B<10809>)
+
+=item B<-o, --offset=>I<offset>
+
+  offset into the image
+
+=item B<-b, --bind=>I<iface>
+
+  interface to bind to (default B<0.0.0.0>)
+
+=item B<-k, --socket=>I<path>
+
+  Use a unix socket with path I<path>
+
+=item B<-f, --format=>I<format>
+
+  Set image format as I<format>
+
+=item B<-r, --read-only>
+
+  export read-only
+
+=item B<-P, --partition=>I<num>
+
+  only expose partition I<num>
+
+=item B<-s, --snapshot>
+
+  use I<filename> as an external snapshot, create a temporary
+  file with backing_file=I<filename>, redirect the write to
+  the temporary one
+
+=item B<-l, --load-snapshot=>I<snapshot_param>
+
+  load an internal snapshot inside I<filename> and export it
+  as an read-only device, I<snapshot_param> format is
+  'snapshot.id=[ID],snapshot.name=[NAME]' or '[ID_OR_NAME]'
+
+=item B<-n, --nocache>
+
+
+=item B<--cache=>I<cache>
+
+  set cache mode to be used with the file.  See the documentation of
+  the emulator's C<-drive cache=...> option for allowed values.
+
+=item B<--aio=>I<aio>
+
+  choose asynchronous I/O mode between B<threads> (the default)
+  and B<native> (Linux only).
+
+=item B<--discard=>I<discard>
+
+  toggles whether I<discard> (also known as I<trim> or I<unmap>)
+  requests are ignored or passed to the filesystem.  The default is no
+  (B<--discard=ignore>).
+
+=item B<-c, --connect=>I<dev>
+
+  connect I<filename> to NBD device I<dev>
+
+=item B<-d, --disconnect>
+
+  disconnect the specified device
+
+=item B<-e, --shared=>I<num>
+
+  device can be shared by I<num> clients (default B<1>)
+
+=item B<-f, --format=>I<fmt>
+
+  force block driver for format I<fmt> instead of auto-detecting
+
+=item B<-t, --persistent>
+
+  don't exit on the last connection
+
+=item B<-v, --verbose>
+
+  display extra debugging information
+
+=item B<-h, --help>
+
+  display this help and exit
+
+=item B<-V, --version>
+
+  output version information and exit
+
+=back
+
+
+
+=head1 SEE ALSO
+
+qemu-img(1)
+
+=head1 AUTHOR
+
+Copyright (C) 2006 Anthony Liguori E<lt>anthony@codemonkey.wsE<gt>.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+

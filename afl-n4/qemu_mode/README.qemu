@@ -21,7 +21,7 @@ The idea and much of the implementation comes from Andrew Griffiths.
 2) How to use
 -------------
 
-The feature is implemented with a fairly simple patch to QEMU 2.3.0. The
+The feature is implemented with a fairly simple patch to QEMU 2.2.0. The
 simplest way to build it is to run ./build_qemu_support.sh. The script will
 download, configure, and compile the QEMU binary for you.
 
@@ -40,10 +40,6 @@ to 200 MB when specifying -Q to afl-fuzz; be careful when overriding this.
 In principle, if you set CPU_TARGET before calling ./build_qemu_support.sh,
 you should get a build capable of running non-native binaries (say, you
 can try CPU_TARGET=arm). I haven't played with this.
-
-Note: if you want the QEMU helper to be installed on your system for all
-users, you need to build it before issuing 'make install' in the parent
-directory.
 
 3) Notes on linking
 -------------------
@@ -86,9 +82,6 @@ match.
 5) Gotchas, feedback, bugs
 --------------------------
 
-If you need to fix up checksums or do other cleanup on mutated test cases, see
-experimental/post_library/ for a viable solution.
-
 Do not mix QEMU mode with ASAN, MSAN, or the likes; QEMU doesn't appreciate
 the "shadow VM" trick employed by the sanitizers and will probably just
 run out of memory.
@@ -97,24 +90,6 @@ Compared to fully-fledged virtualization, the user emulation mode is *NOT* a
 security boundary. The binaries can freely interact with the host OS. If you
 somehow need to fuzz an untrusted binary, put everything in a sandbox first.
 
-Beyond that, this is an early-stage mechanism, so fields reports are welcome.
-You can send them to <afl-users@googlegroups.com>.
-
-6) Alternatives: static rewriting
----------------------------------
-
-Statically rewriting binaries just once, instead of attempting to translate
-them at run time, can be a faster alternative to what is being attempted here.
-That said, static rewriting is fraught with peril, because it depends on being
-able to properly and fully model program control flow without actually running
-it.
-
-If you want to experiment with this mode of operation, there is a module
-contributed by Aleksandar Nikolich:
-
-  https://github.com/vrtadmin/moflow/tree/master/afl-dyninst
-  https://groups.google.com/forum/#!topic/afl-users/HlSQdbOTlpg
-
-At this point, the author reports the possibility of hiccups with stripped
-binaries. That said, if we can get it to be comparably reliable to QEMU, we may
-decide to switch to this mode, but I had no time to play with it yet.
+Beyond that, this is an early-stage mechanism, so fields reports - even just
+"yeah, it worked for me" - are very much welcome. You can always drop a mail to
+<afl-users@googlegroups.com>.

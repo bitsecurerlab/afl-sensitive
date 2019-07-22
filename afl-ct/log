@@ -1,2 +1,105 @@
 Reserved 0xf7000000 bytes of guest address space
 host mmap_min_addr=0x10000
+guest_base  0x7f0f8b376000
+start    end      size     prot
+08048000-0804f000 00007000 r-x
+0804f000-08064000 00015000 rw-
+ba2aa000-ba2ab000 00001000 ---
+ba2ab000-baaab000 00800000 rwx
+start_brk   0x00000000
+end_code    0x0804e290
+start_code  0x08048000
+start_data  0x0804f290
+end_data    0x080634ab
+start_stack 0xbaaa9f80
+brk         0x08063c48
+entry       0x0804dd6b
+mmap        0x00000000
+start_mmap  0x80000000
+data_offset 0x00000000
+----------------
+IN: 
+0x0804dd6b:  call   0x804de74
+
+----------------
+IN: 
+0x0804de74:  push   $0x0
+0x0804de76:  push   $0x804f294
+0x0804de7b:  push   $0x804fd03
+0x0804de80:  call   0x804dea4
+
+----------------
+IN: 
+0x0804dea4:  push   %esi
+0x0804dea5:  push   %ecx
+0x0804dea6:  mov    0xc(%esp),%ecx
+0x0804deaa:  mov    0x10(%esp),%esi
+0x0804deae:  mov    0x14(%esp),%eax
+0x0804deb2:  sub    %esi,%ecx
+0x0804deb4:  je     0x804debb
+
+----------------
+IN: 
+0x0804deb6:  xor    (%esi),%al
+0x0804deb8:  inc    %esi
+0x0804deb9:  loop   0x804deb6
+
+----------------
+IN: 
+0x0804debb:  pop    %ecx
+0x0804debc:  pop    %esi
+0x0804debd:  ret    
+
+----------------
+IN: 
+0x0804de85:  add    $0xc,%esp
+0x0804de88:  push   $0x0
+0x0804de8a:  push   $0x0
+0x0804de8c:  push   $0x0
+0x0804de8e:  push   $0x0
+0x0804de90:  push   $0x0
+0x0804de92:  push   $0x0
+0x0804de94:  add    $0x18,%esp
+0x0804de97:  pushf  
+0x0804de98:  pop    %eax
+0x0804de99:  and    $0xffffff3b,%eax
+0x0804de9e:  push   %eax
+0x0804de9f:  popf   
+
+----------------
+IN: 
+0x0804dea0:  push   $0x0
+0x0804dea2:  pop    %eax
+0x0804dea3:  ret    
+
+----------------
+IN: 
+0x0804dd70:  call   0x8049300
+
+----------------
+IN: 
+0x08049300:  push   %ebp
+0x08049301:  mov    %esp,%ebp
+0x08049303:  push   %esi
+0x08049304:  sub    $0xa04,%esp
+0x0804930a:  mov    $0x4347c000,%eax
+0x0804930f:  movl   $0x0,-0x8(%ebp)
+0x08049316:  movl   $0x0,-0xc(%ebp)
+0x0804931d:  mov    (%eax),%eax
+0x0804931f:  mov    %eax,(%esp)
+0x08049322:  call   0x804ab40
+
+----------------
+IN: 
+0x08049300:  push   %ebp
+0x08049301:  mov    %esp,%ebp
+0x08049303:  push   %esi
+0x08049304:  sub    $0xa04,%esp
+0x0804930a:  mov    $0x4347c000,%eax
+0x0804930f:  movl   $0x0,-0x8(%ebp)
+0x08049316:  movl   $0x0,-0xc(%ebp)
+0x0804931d:  mov    (%eax),%eax
+0x0804931f:  mov    %eax,(%esp)
+0x08049322:  call   0x804ab40
+
+qemu: uncaught target signal 11 (Segmentation fault) - core dumped
