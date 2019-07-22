@@ -310,35 +310,6 @@ def setup_dirs(round_id, mode, csid):
 
 
 
-def start_driller(target_fuzzer):
-
-    binary_path = target_fuzzer.cb_bin_paths[0]
-    fuzzer_id = target_fuzzer.ins_name
-    in_dir = target_fuzzer.output_dir
-    out_dir = target_fuzzer.sync_dir
-
-    args = ['/bin/bash', '-c', 'source /usr/local/bin/virtualenvwrapper.sh && workon angr && ./start_driller.py --b {} --f {} --i {} --o {}'.format(binary_path, fuzzer_id, in_dir, out_dir)]
-    p = subprocess.Popen(args)  
-
-    time.sleep(1)
-    cmd = 'ps -ef|grep python '
-    out = subprocess.check_output(cmd, shell=True)
-
-    pid = -1
-    for line in out.splitlines():
-        if 'start_driller' in line:
-            pid = int(line.split(None)[1])
-            break
-    l.info("%s in %d", args, pid)
-    return pid
-
-
-def stop_driller(d_pid):
-    cmd = 'kill {}'.format(d_pid)
-    system_clean(cmd)
-    l.warning('-> driller terminates')
-
-
 def main():
     
 
@@ -353,10 +324,6 @@ def main():
     parser.add_argument('--round', metavar='ROUND', required=False, type=int,
         default=0, help='round of the exp')
 
-    feature_parser = parser.add_mutually_exclusive_group(required=False)
-    feature_parser.add_argument('--angr', dest='angr_on', action='store_true')
-    feature_parser.add_argument('--no-angr', dest='angr_on', action='store_false')
-    parser.set_defaults(angr_on=False)
 
     args = parser.parse_args()
 
@@ -365,17 +332,12 @@ def main():
 
     setup_dirs(round_id, args.mode.replace(':', ''), csid)
 
-    angr_on = args.angr_on
-
-    if angr_on:
-        l.error("sorry, currently angr not supported")
 
     mode = args.mode.strip().split(':')
     group_vols = [int(n) for n in mode]
 
     afl_total_num = sum(group_vols)
     
-
     group_cnt = len(afl_list)    
 
     group_dict = dict([])
@@ -411,9 +373,6 @@ def main():
     t_stats = threading.Thread(target=raise_stats.do_loop_thread, args=(t_stop,))
     t_stats.start()
     
-    driller_pid = None
-    if angr_on:
-        driller_pid = start_driller(fuzz_filter)
 
     # keep running for 168 hours until finding no less than 10 unique crashes
     for i in range(168 * 6):
@@ -434,8 +393,6 @@ def main():
     t_stop.set()
     t_stats.join()   
 
-    if angr_on and driller_pid != -1:
-        stop_driller(driller_pid)
 
     l.warning('**exit...')
 
